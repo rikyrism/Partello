@@ -167,6 +167,14 @@ pub struct PushKeyResponse {
     pub public_key: String,
 }
 
+/// Today's YouTube chart per genre. An empty `genres` list means the server
+/// has none (no API key, or the first fetch has not finished); the web app
+/// then shows its built-in picks.
+pub async fn trending(State(app): State<AppState>) -> impl axum::response::IntoResponse {
+    let body = Json(app.trending.get());
+    ([(header::CACHE_CONTROL, "public, max-age=900")], body)
+}
+
 pub async fn push_key(State(app): State<AppState>) -> AppResult<Json<PushKeyResponse>> {
     let public_key = app
         .hub

@@ -37,6 +37,10 @@ pub struct Config {
     pub vapid_private_key: Option<String>,
     /// Contact push services may use (`mailto:` or `https:` URL).
     pub vapid_subject: String,
+    /// Country whose YouTube chart fills the landing page (ISO 3166-1 alpha-2).
+    pub trending_region: String,
+    /// Daily refresh time of the trending list.
+    pub trending_schedule: crate::trending::Schedule,
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +194,8 @@ impl Config {
             livekit,
             vapid_private_key: non_empty("VAPID_PRIVATE_KEY"),
             vapid_subject: non_empty("VAPID_SUBJECT").unwrap_or_else(|| default_vapid_subject(&public_base_url)),
+            trending_region: trending_region(non_empty("TRENDING_REGION"))?,
+            trending_schedule: trending_schedule(parse_or("TRENDING_REFRESH_HOUR", 7)?, parse_or("TRENDING_UTC_OFFSET", 7)?)?,
         })
     }
 
@@ -223,6 +229,11 @@ impl Config {
             livekit: None,
             vapid_private_key: None,
             vapid_subject: "mailto:push@example.org".into(),
+            trending_region: "US".into(),
+            trending_schedule: crate::trending::Schedule {
+                hour: 7,
+                utc_offset_hours: 7,
+            },
         }
     }
 
@@ -274,6 +285,24 @@ fn list(key: &str) -> Option<Vec<String>> {
     env::var(key)
         .ok()
         .map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect())
+}
+
+fn trending_region(value: Option<String>) -> anyhow::Result<String> {
+    let region = value.unwrap_or_else(|| "US".into()).to_ascii_uppercase();
+    if region.len() != 2 || !region.chars().all(|c| c.is_ascii_uppercase()) {
+        anyhow::bail!("TRENDING_REGION must be a two-letter country code, like US");
+    }
+    Ok(region)
+}
+
+fn trending_schedule(hour: u8, utc_offset_hours: i8) -> anyhow::Result<crate::trending::Schedule> {
+    if hour > 23 {
+        anyhow::bail!("TRENDING_REFRESH_HOUR must be 0–23");
+    }
+    if !(-12..=14).contains(&utc_offset_hours) {
+        anyhow::bail!("TRENDING_UTC_OFFSET must be whole hours from -12 to 14, like 7 for WIB");
+    }
+    Ok(crate::trending::Schedule { hour, utc_offset_hours })
 }
 
 fn parse_or<T: std::str::FromStr>(key: &str, default: T) -> anyhow::Result<T>

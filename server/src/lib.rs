@@ -13,6 +13,7 @@ pub mod room;
 pub mod routes;
 pub mod security;
 pub mod sfu;
+pub mod trending;
 pub mod validation;
 pub mod youtube;
 pub mod youtube_search;
@@ -48,6 +49,7 @@ pub struct AppInner {
     pub config: Arc<Config>,
     pub hub: Arc<Hub>,
     pub search: Arc<SearchClient>,
+    pub trending: Arc<trending::TrendingCache>,
     pub limiters: Limiters,
 }
 
@@ -62,14 +64,22 @@ pub fn build_state(config: Config, store: Store) -> AppState {
     Arc::new(AppInner {
         hub: Arc::new(Hub::new(store, config.clone(), search.clone())),
         search,
+        trending: Arc::default(),
         config,
         limiters: Limiters::default(),
     })
 }
 
 /// Background housekeeping: room state saved every 5s, presence sweeps every
-/// 15s, retention purge hourly.
+/// 15s, retention purge hourly, the trending list daily.
 pub fn spawn_maintenance(app: &AppState) {
+    trending::spawn(
+        app.hub.store.clone(),
+        app.search.clone(),
+        app.trending.clone(),
+        app.config.trending_region.clone(),
+        app.config.trending_schedule,
+    );
     let saver = app.hub.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));

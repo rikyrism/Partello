@@ -90,6 +90,7 @@ pub fn router(app: AppState) -> Router {
         .route("/rooms/{slug}/search", get(rooms::search))
         .route("/rooms/{slug}/push", post(rooms::subscribe_push).delete(rooms::unsubscribe_push))
         .route("/push/key", get(rooms::push_key))
+        .route("/trending", get(rooms::trending))
         .route("/rooms/{slug}/ws", get(ws_handler))
         .layer(cors(&app));
 

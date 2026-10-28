@@ -288,6 +288,130 @@ fn parse_playable(body: &str) -> Result<Vec<PlaylistVideo>, AppError> {
         .collect())
 }
 
+/// One video of YouTube's "most popular" chart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartVideo {
+    pub id: String,
+    pub title: String,
+    pub channel: String,
+    /// Largest thumbnail YouTube has for it; always on i.ytimg.com.
+    pub thumb: String,
+    pub duration: Option<u32>,
+}
+
+/// Shorter than this is a Short: not much to watch together.
+const CHART_MIN_SECONDS: u32 = 60;
+/// A title with this many hashtags is a clip made for the feed, not a video.
+const CHART_MAX_HASHTAGS: usize = 2;
+
+/// Shorts and feed clips (up to 3 minutes, so length alone misses them).
+fn looks_like_a_short(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("#short") || title.split_whitespace().filter(|w| w.starts_with('#') && w.len() > 1).count() > CHART_MAX_HASHTAGS
+}
+
+impl SearchClient {
+    /// Up to `max` videos of YouTube's most-popular chart for `region`,
+    /// optionally one video category. Only videos that can play in a room
+    /// (embeddable, public, not live, not age-restricted) are kept.
+    /// Costs 1 quota unit.
+    pub async fn chart(&self, region: &str, category: Option<&str>, max: usize) -> Result<Vec<ChartVideo>, AppError> {
+        let Some(key) = &self.api_key else {
+            return Err(AppError::Unavailable("YouTube isn't set up on this server".into()));
+        };
+        let mut params = vec![
+            ("part", "snippet,contentDetails,status"),
+            ("chart", "mostPopular"),
+            ("regionCode", region),
+            ("maxResults", "50"),
+            ("key", key.as_str()),
+        ];
+        if let Some(c) = category {
+            params.push(("videoCategoryId", c));
+        }
+        let url = Url::parse_with_params("https://www.googleapis.com/youtube/v3/videos", params).expect("static url");
+        let body = self.get(url).await?;
+        let mut videos = parse_chart(&body)?;
+        videos.truncate(max);
+        Ok(videos)
+    }
+}
+
+#[derive(Deserialize)]
+struct ChartResponse {
+    #[serde(default)]
+    items: Vec<ChartItem>,
+}
+
+#[derive(Deserialize)]
+struct ChartItem {
+    id: String,
+    snippet: ChartSnippet,
+    #[serde(rename = "contentDetails")]
+    content_details: Option<ChartDetails>,
+    status: VideoStatus,
+}
+
+#[derive(Deserialize)]
+struct ChartSnippet {
+    title: String,
+    #[serde(rename = "channelTitle", default)]
+    channel_title: String,
+    #[serde(rename = "liveBroadcastContent", default)]
+    live: String,
+    #[serde(default)]
+    thumbnails: HashMap<String, Thumbnail>,
+}
+
+#[derive(Deserialize)]
+struct Thumbnail {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct ChartDetails {
+    duration: Option<String>,
+    #[serde(rename = "contentRating", default)]
+    content_rating: HashMap<String, serde_json::Value>,
+}
+
+fn parse_chart(body: &str) -> Result<Vec<ChartVideo>, AppError> {
+    let parsed: ChartResponse =
+        serde_json::from_str(body).map_err(|_| AppError::Unavailable("YouTube returned something unexpected".into()))?;
+    Ok(parsed
+        .items
+        .into_iter()
+        .filter(|v| v.status.embeddable && v.status.privacy == "public")
+        .filter(|v| v.snippet.live != "live" && v.snippet.live != "upcoming")
+        .filter(|v| youtube::is_valid_video_id(&v.id))
+        .filter(|v| !looks_like_a_short(&decode_entities(&v.snippet.title)))
+        .filter_map(|v| {
+            let details = v.content_details?;
+            if details.content_rating.get("ytRating").and_then(|r| r.as_str()) == Some("ytAgeRestricted") {
+                return None;
+            }
+            let duration = details.duration.as_deref().and_then(parse_iso_duration);
+            if duration.is_some_and(|d| d < CHART_MIN_SECONDS) {
+                return None;
+            }
+            // Only YouTube's own image host, whatever the response says.
+            let thumb = ["maxres", "standard", "high"]
+                .iter()
+                .filter_map(|k| v.snippet.thumbnails.get(*k))
+                .map(|t| t.url.clone())
+                .find(|u| u.starts_with("https://i.ytimg.com/"))
+                .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", v.id));
+            Some(ChartVideo {
+                title: decode_entities(&v.snippet.title),
+                channel: decode_entities(&v.snippet.channel_title),
+                thumb,
+                duration,
+                id: v.id,
+            })
+        })
+        .collect())
+}
+
 /// Trims and collapses whitespace; lowercased so cache keys are shared.
 pub fn normalize_query(q: &str) -> Result<String, AppError> {
     let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -448,6 +572,45 @@ mod tests {
         assert_eq!(r[0].title, "Big Buck Bunny & friends");
         assert_eq!(r[0].thumbnail_url, "https://i.ytimg.com/vi/aqz-KE-bpKQ/mqdefault.jpg");
         assert!(parse_search("not json").is_err());
+    }
+
+    #[test]
+    fn chart_keeps_only_playable_videos() {
+        let item = |id: &str, extra: &str| {
+            format!(
+                r#"{{"id":"{id}","snippet":{{"title":"T &amp; U","channelTitle":"C","liveBroadcastContent":"none","thumbnails":{{"high":{{"url":"https://i.ytimg.com/vi/{id}/hqdefault.jpg"}},"maxres":{{"url":"https://i.ytimg.com/vi/{id}/maxresdefault.jpg"}}}}}},"contentDetails":{{"duration":"PT3M"{extra}}},"status":{{"embeddable":true,"privacyStatus":"public"}}}}"#
+            )
+        };
+        let body = format!(
+            r#"{{"items":[{},{},{},{}]}}"#,
+            item("aqz-KE-bpKQ", ""),
+            item("dQw4w9WgXcQ", r#","contentRating":{"ytRating":"ytAgeRestricted"}"#),
+            item("bad id!", ""),
+            item("XdPt8QWTypI", "").replace("PT3M", "PT45S"),
+        );
+        let v = parse_chart(&body).unwrap();
+        assert_eq!(v.len(), 1, "age-restricted, bad ids and Shorts are dropped");
+        assert_eq!(v[0].title, "T & U");
+        assert_eq!(v[0].thumb, "https://i.ytimg.com/vi/aqz-KE-bpKQ/maxresdefault.jpg");
+        assert_eq!(v[0].duration, Some(180));
+
+        let short = item("aqz-KE-bpKQ", "").replace("T &amp; U", "lol #standup #comedy #funny");
+        assert!(
+            parse_chart(&format!(r#"{{"items":[{short}]}}"#)).unwrap().is_empty(),
+            "hashtag clips are dropped"
+        );
+        assert!(looks_like_a_short("Wait for it #Shorts"));
+        assert!(!looks_like_a_short("Song (Official Video) #1 #music"));
+
+        let not_embeddable = item("aqz-KE-bpKQ", "").replace(r#""embeddable":true"#, r#""embeddable":false"#);
+        assert!(parse_chart(&format!(r#"{{"items":[{not_embeddable}]}}"#)).unwrap().is_empty());
+        let foreign_thumb =
+            item("aqz-KE-bpKQ", "").replace("https://i.ytimg.com/vi/aqz-KE-bpKQ/maxresdefault.jpg", "https://evil.example/x.jpg");
+        let v = parse_chart(&format!(r#"{{"items":[{foreign_thumb}]}}"#)).unwrap();
+        assert_eq!(
+            v[0].thumb, "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg",
+            "falls back past foreign hosts"
+        );
     }
 
     #[test]

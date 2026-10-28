@@ -235,6 +235,24 @@ impl Store {
         }
     }
 
+    /// Stores `value` under `key`, replacing what was there.
+    pub async fn put_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                sqlx::query("INSERT INTO server_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2")
+                    .bind(key)
+                    .bind(value)
+                    .execute(pool)
+                    .await?;
+                Ok(())
+            }
+            Store::Memory(m) => {
+                m.lock().unwrap().settings.insert(key.to_string(), value.to_string());
+                Ok(())
+            }
+        }
+    }
+
     pub async fn add_push(&self, room_id: Uuid, sub: &Subscription, lang: &str) -> Result<(), sqlx::Error> {
         match self {
             Store::Postgres(pool) => {

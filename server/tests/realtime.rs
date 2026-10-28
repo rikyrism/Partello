@@ -1032,3 +1032,13 @@ async fn browsers_subscribe_to_room_notifications() {
     assert_eq!(r.status(), 204);
     assert!(s.app.hub.store.push_subscriptions(room.id).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn trending_is_empty_without_a_youtube_key() {
+    let s = spawn().await;
+    let r = s.http.get(s.url("/api/trending")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["cache-control"], "public, max-age=900");
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["genres"], json!([]), "the web app falls back to its built-in picks");
+}
