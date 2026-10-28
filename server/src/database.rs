@@ -11,7 +11,7 @@ use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::room::model::{ChatMessage, ControlMode, QueueMode, RoomRecord, RoomSettings};
+use crate::room::model::{ChatMessage, ControlMode, QueueMode, ReplyRef, RoomRecord, RoomSettings};
 
 #[derive(Debug, Clone)]
 pub struct ApiKeyRecord {
@@ -29,6 +29,7 @@ pub enum Store {
 #[derive(Default)]
 pub struct MemData {
     rooms: HashMap<String, (RoomRecord, i64)>,
+    saved_state: HashMap<Uuid, String>,
     chat: Vec<(Uuid, ChatMessage)>,
     api_keys: Vec<(ApiKeyRecord, Vec<u8>)>,
 }
@@ -72,8 +73,8 @@ impl Store {
         match self {
             Store::Postgres(pool) => {
                 let res = sqlx::query(
-                    "INSERT INTO rooms (id, slug, name, host_key_hash, control_mode, queue_mode, max_participants, api_key_id, created_at, last_active_at, password_hash)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
+                    "INSERT INTO rooms (id, slug, name, host_key_hash, control_mode, queue_mode, max_participants, api_key_id, created_at, last_active_at, password_hash, permanent)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)
                      ON CONFLICT (slug) DO NOTHING",
                 )
                 .bind(r.id)
@@ -86,6 +87,7 @@ impl Store {
                 .bind(r.api_key_id)
                 .bind(from_ms(r.created_at))
                 .bind(&r.password_hash)
+                .bind(r.settings.permanent)
                 .execute(pool)
                 .await?;
                 Ok(res.rows_affected() == 1)
@@ -105,7 +107,7 @@ impl Store {
         match self {
             Store::Postgres(pool) => {
                 let row = sqlx::query(
-                    "SELECT id, slug, name, host_key_hash, control_mode, queue_mode, max_participants, api_key_id, created_at, password_hash
+                    "SELECT id, slug, name, host_key_hash, control_mode, queue_mode, max_participants, api_key_id, created_at, password_hash, permanent
                      FROM rooms WHERE slug = $1",
                 )
                 .bind(slug)
@@ -120,6 +122,7 @@ impl Store {
                         settings: RoomSettings {
                             control_mode: ControlMode::parse(row.try_get("control_mode")?),
                             queue_mode: QueueMode::parse(row.try_get("queue_mode")?),
+                            permanent: row.try_get("permanent")?,
                         },
                         max_participants: row.try_get::<i32, _>("max_participants")? as u32,
                         api_key_id: row.try_get("api_key_id")?,
@@ -137,13 +140,14 @@ impl Store {
         match self {
             Store::Postgres(pool) => {
                 sqlx::query(
-                    "UPDATE rooms SET name = $2, control_mode = $3, queue_mode = $4, password_hash = $5, last_active_at = now() WHERE id = $1",
+                    "UPDATE rooms SET name = $2, control_mode = $3, queue_mode = $4, password_hash = $5, permanent = $6, last_active_at = now() WHERE id = $1",
                 )
                 .bind(id)
                 .bind(name)
                 .bind(settings.control_mode.as_str())
                 .bind(settings.queue_mode.as_str())
                 .bind(password_hash)
+                .bind(settings.permanent)
                 .execute(pool)
                 .await?;
             }
@@ -156,6 +160,36 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// Stores the live state of a room (JSON from `SavedState`).
+    pub async fn save_room_state(&self, id: Uuid, json: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                sqlx::query("UPDATE rooms SET saved_state = $2::jsonb WHERE id = $1")
+                    .bind(id)
+                    .bind(json)
+                    .execute(pool)
+                    .await?;
+            }
+            Store::Memory(m) => {
+                m.lock().unwrap().saved_state.insert(id, json.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn room_state(&self, id: Uuid) -> Result<Option<String>, sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                let row = sqlx::query("SELECT saved_state::text AS s FROM rooms WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await?;
+                Ok(row.and_then(|r| r.try_get::<Option<String>, _>("s").ok().flatten()))
+            }
+            Store::Memory(m) => Ok(m.lock().unwrap().saved_state.get(&id).cloned()),
+        }
     }
 
     pub async fn touch_rooms(&self, ids: &[Uuid]) -> Result<(), sqlx::Error> {
@@ -185,7 +219,8 @@ impl Store {
         match self {
             Store::Postgres(pool) => {
                 sqlx::query(
-                    "INSERT INTO chat_messages (id, room_id, participant_id, display_name, body, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+                    "INSERT INTO chat_messages (id, room_id, participant_id, display_name, body, created_at, reply_to)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
                 )
                 .bind(msg.id)
                 .bind(room_id)
@@ -193,6 +228,7 @@ impl Store {
                 .bind(&msg.display_name)
                 .bind(&msg.body)
                 .bind(from_ms(msg.created_at))
+                .bind(msg.reply_to.as_ref().and_then(|r| serde_json::to_string(r).ok()))
                 .execute(pool)
                 .await?;
             }
@@ -206,7 +242,7 @@ impl Store {
         match self {
             Store::Postgres(pool) => {
                 let rows = sqlx::query(
-                    "SELECT id, participant_id, display_name, body, created_at FROM chat_messages
+                    "SELECT id, participant_id, display_name, body, created_at, reply_to::text AS reply_to FROM chat_messages
                      WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2",
                 )
                 .bind(room_id)
@@ -222,6 +258,9 @@ impl Store {
                             display_name: row.try_get("display_name")?,
                             body: row.try_get("body")?,
                             created_at: ms(row.try_get("created_at")?),
+                            reply_to: row
+                                .try_get::<Option<String>, _>("reply_to")?
+                                .and_then(|j| serde_json::from_str::<ReplyRef>(&j).ok()),
                             nonce: None,
                         })
                     })
@@ -241,7 +280,7 @@ impl Store {
     pub async fn delete_inactive_rooms(&self, cutoff_ms: i64) -> Result<u64, sqlx::Error> {
         match self {
             Store::Postgres(pool) => {
-                let res = sqlx::query("DELETE FROM rooms WHERE last_active_at < $1")
+                let res = sqlx::query("DELETE FROM rooms WHERE last_active_at < $1 AND NOT permanent")
                     .bind(from_ms(cutoff_ms))
                     .execute(pool)
                     .await?;
@@ -250,7 +289,7 @@ impl Store {
             Store::Memory(m) => {
                 let mut m = m.lock().unwrap();
                 let before = m.rooms.len();
-                m.rooms.retain(|_, (_, active)| *active >= cutoff_ms);
+                m.rooms.retain(|_, (r, active)| r.settings.permanent || *active >= cutoff_ms);
                 let alive: Vec<Uuid> = m.rooms.values().map(|(r, _)| r.id).collect();
                 m.chat.retain(|(room, _)| alive.contains(room));
                 Ok((before - m.rooms.len()) as u64)

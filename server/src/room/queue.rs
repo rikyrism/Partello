@@ -2,10 +2,10 @@
 
 use std::collections::VecDeque;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueueItem {
     pub id: Uuid,
     pub video_id: String,
@@ -23,6 +23,10 @@ pub struct Queue {
 }
 
 impl Queue {
+    pub fn from_items(items: Vec<QueueItem>) -> Self {
+        Self { items: items.into() }
+    }
+
     pub fn items(&self) -> Vec<QueueItem> {
         self.items.iter().cloned().collect()
     }

@@ -22,7 +22,11 @@ struct Server {
 }
 
 async fn spawn_with(config: Config) -> Server {
-    let app = build_state(config, Store::memory());
+    spawn_on(config, Store::memory()).await
+}
+
+async fn spawn_on(config: Config, store: Store) -> Server {
+    let app = build_state(config, store);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = routes::router(app.clone());
@@ -754,9 +758,16 @@ async fn pin_locks_after_repeated_misses_until_the_host_resets_it() {
         panic!("host joins")
     };
     let (_ws, _) = s.socket(&slug, &host.token).await;
-    hub.update_settings(&slug, &host.token, None, None, None, Some("2468".into()))
-        .await
-        .unwrap();
+    hub.update_settings(
+        &slug,
+        &host.token,
+        partello::realtime::hub::SettingsChange {
+            pin: Some("2468".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert!(hub.join(&slug, "Riky", None, Some("2468"), friend).await.is_ok());
 }
 
@@ -792,4 +803,139 @@ async fn queue_add_echoes_the_nonce() {
     // Ordinary changes carry no nonce.
     send(&mut host, json!({ "type": "playback_control", "action": "pause", "position": 1 })).await;
     assert!(next_of(&mut host, "playback_changed").await.get("nonce").is_none());
+}
+
+#[tokio::test]
+async fn reactions_and_skip_votes_reach_everyone() {
+    let s = spawn().await;
+    let (slug, mut host, mut guest, _host_id, guest_id) = s.pair().await;
+    send(&mut host, json!({ "type": "queue_add", "url": VIDEO })).await;
+    let item_id = next_of(&mut guest, "playback_changed").await["playback"]["item"]["id"].clone();
+
+    send(&mut guest, json!({ "type": "react", "emoji": "😂" })).await;
+    let r = next_of(&mut host, "reaction").await;
+    assert_eq!(r["emoji"], "😂");
+    assert_eq!(r["participant_id"], guest_id);
+    send(&mut guest, json!({ "type": "react", "emoji": "💩" })).await;
+    assert_eq!(next_of(&mut guest, "error").await["code"], "validation_failed");
+
+    // Two people: both must vote.
+    send(&mut guest, json!({ "type": "skip_vote", "item_id": item_id, "vote": true })).await;
+    let votes = next_of(&mut host, "skip_votes").await;
+    assert_eq!(votes["voters"], json!([guest_id]));
+    assert_eq!(votes["skipped"], false);
+    // A late joiner sees the votes so far.
+    let (token, _) = s.join(&slug, "Late", None).await;
+    let (_late, sync) = s.socket(&slug, &token).await;
+    assert_eq!(sync["skip_votes"], json!([guest_id]));
+}
+
+#[tokio::test]
+async fn chat_replies_carry_the_quote() {
+    let s = spawn().await;
+    let (_slug, mut host, mut guest, _, _) = s.pair().await;
+    send(&mut host, json!({ "type": "chat_send", "body": "popcorn?" })).await;
+    let original = next_of(&mut guest, "chat_message_created").await["message"]["id"].clone();
+    send(
+        &mut guest,
+        json!({ "type": "chat_send", "body": "yes @Host", "reply_to": original }),
+    )
+    .await;
+    let reply = next_of(&mut host, "chat_message_created").await;
+    let reply = if reply["message"]["body"] == "popcorn?" {
+        next_of(&mut host, "chat_message_created").await
+    } else {
+        reply
+    };
+    assert_eq!(reply["message"]["reply_to"]["body"], "popcorn?");
+    assert_eq!(reply["message"]["reply_to"]["display_name"], "Host");
+}
+
+#[tokio::test]
+async fn video_and_queue_survive_a_restart() {
+    let store = Store::memory();
+    let s = spawn_on(Config::for_tests(), store.clone()).await;
+    let (slug, mut host, _guest, _, _) = s.pair().await;
+    send(&mut host, json!({ "type": "queue_add", "url": VIDEO })).await;
+    next_of(&mut host, "playback_changed").await;
+    send(&mut host, json!({ "type": "queue_add", "url": "https://youtu.be/aqz-KE-bpKQ" })).await;
+    next_of(&mut host, "queue_updated").await;
+    s.app.hub.flush().await;
+
+    // A new process on the same database: sessions are gone, the room is not.
+    let s2 = spawn_on(Config::for_tests(), store).await;
+    let (token, _) = s2.join(&slug, "Host again", None).await;
+    let (_ws, sync) = s2.socket(&slug, &token).await;
+    assert_eq!(sync["playback"]["item"]["video_id"], "dQw4w9WgXcQ");
+    assert_eq!(sync["playback"]["status"], "playing");
+    assert_eq!(sync["queue"][0]["video_id"], "aqz-KE-bpKQ");
+}
+
+#[tokio::test]
+async fn playlist_import_reports_when_unconfigured() {
+    let s = spawn().await;
+    let (_slug, mut host, _guest, _, _) = s.pair().await;
+    send(
+        &mut host,
+        json!({ "type": "queue_add_playlist", "url": "https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG", "nonce": "p1" }),
+    )
+    .await;
+    let err = next_of(&mut host, "error").await;
+    assert_eq!(err["nonce"], "p1");
+    assert_eq!(err["code"], "unavailable");
+    send(
+        &mut host,
+        json!({ "type": "queue_add_playlist", "url": "https://www.youtube.com/watch?v=YEhzWw8qQWk&list=RDYEhzWw8qQWk", "nonce": "p2" }),
+    )
+    .await;
+    let err = next_of(&mut host, "error").await;
+    assert!(err["message"].as_str().unwrap().contains("mixes"), "{err}");
+}
+
+#[tokio::test]
+async fn sfu_calls_hand_out_tokens_to_call_members_only() {
+    let mut config = Config::for_tests();
+    config.livekit = Some(partello::config::LiveKitConfig {
+        url: "wss://lk.example.org".into(),
+        // Nothing listens here: removals fail quietly in the background.
+        api_url: "http://127.0.0.1:9".into(),
+        api_key: "APIkey".into(),
+        api_secret: "secret-that-is-long-enough-for-hs256".into(),
+    });
+    let s = spawn_with(config).await;
+    let (slug, host_key) = s.create_room("Host").await;
+    let (token, _) = s.join(&slug, "Host", Some(&host_key)).await;
+    let (mut ws, sync) = s.socket(&slug, &token).await;
+    assert_eq!(sync["limits"]["call_mode"], "sfu");
+    assert_eq!(sync["limits"]["max_voice_participants"], 8, "for_tests keeps the default");
+
+    send(&mut ws, json!({ "type": "voice_join", "muted": false, "camera": false })).await;
+    let call = next_of(&mut ws, "call_token").await;
+    assert_eq!(call["url"], "wss://lk.example.org");
+    assert_eq!(call["token"].as_str().unwrap().split('.').count(), 3);
+
+    // Browsers may open sockets to the SFU.
+    let r = s.http.get(s.url("/healthz")).send().await.unwrap();
+    let csp = r.headers()["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("wss://lk.example.org https://lk.example.org"), "{csp}");
+}
+
+#[tokio::test]
+async fn hosts_can_make_a_room_permanent() {
+    let s = spawn().await;
+    let (slug, host_key) = s.create_room("Host").await;
+    let (token, _) = s.join(&slug, "Host", Some(&host_key)).await;
+    let (_ws, _) = s.socket(&slug, &token).await;
+    let r = s
+        .http
+        .patch(s.url(&format!("/api/rooms/{slug}/settings")))
+        .bearer_auth(&token)
+        .json(&json!({ "permanent": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["settings"]["permanent"], true);
+    assert_eq!(body["settings"]["control_mode"], "host_only", "other settings unchanged");
 }

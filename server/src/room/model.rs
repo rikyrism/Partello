@@ -59,6 +59,8 @@ impl QueueMode {
 pub struct RoomSettings {
     pub control_mode: ControlMode,
     pub queue_mode: QueueMode,
+    /// Kept forever (never purged for inactivity), so the link stays valid.
+    pub permanent: bool,
 }
 
 /// A room as stored in the database.
@@ -126,7 +128,18 @@ pub struct ChatMessage {
     pub display_name: String,
     pub body: String,
     pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyRef>,
     /// Echo of the sender's client nonce so it can reconcile its optimistic copy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+}
+
+/// A quoted excerpt of the message a reply answers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplyRef {
+    pub id: Uuid,
+    pub participant_id: Uuid,
+    pub display_name: String,
+    pub body: String,
 }

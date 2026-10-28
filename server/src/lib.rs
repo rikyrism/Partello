@@ -4,12 +4,14 @@
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod ice;
 pub mod observability;
 pub mod rate_limit;
 pub mod realtime;
 pub mod room;
 pub mod routes;
 pub mod security;
+pub mod sfu;
 pub mod validation;
 pub mod youtube;
 pub mod youtube_search;
@@ -44,7 +46,7 @@ impl Default for Limiters {
 pub struct AppInner {
     pub config: Arc<Config>,
     pub hub: Arc<Hub>,
-    pub search: SearchClient,
+    pub search: Arc<SearchClient>,
     pub limiters: Limiters,
 }
 
@@ -52,16 +54,29 @@ pub type AppState = Arc<AppInner>;
 
 pub fn build_state(config: Config, store: Store) -> AppState {
     let config = Arc::new(config);
+    let search = Arc::new(SearchClient::new(
+        config.youtube_api_key.clone(),
+        config.youtube_search_daily_budget,
+    ));
     Arc::new(AppInner {
-        hub: Arc::new(Hub::new(store, config.clone())),
-        search: SearchClient::new(config.youtube_api_key.clone(), config.youtube_search_daily_budget),
+        hub: Arc::new(Hub::new(store, config.clone(), search.clone())),
+        search,
         config,
         limiters: Limiters::default(),
     })
 }
 
-/// Background housekeeping: presence sweeps every 15s, retention purge hourly.
+/// Background housekeeping: room state saved every 5s, presence sweeps every
+/// 15s, retention purge hourly.
 pub fn spawn_maintenance(app: &AppState) {
+    let saver = app.hub.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            saver.flush().await;
+        }
+    });
     let hub = app.hub.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(15));

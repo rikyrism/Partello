@@ -58,6 +58,7 @@ components:
       properties:
         control_mode: { type: string, enum: [host_only, everyone], default: host_only, description: Who may play, pause, seek and skip. }
         queue_mode: { type: string, enum: [everyone, host_only], default: everyone, description: Who may add videos. }
+        permanent: { type: boolean, default: false, description: Never deleted for inactivity, so the link keeps working. }
     RoomInfo:
       type: object
       required: [slug, name, settings, max_participants, created_at]
@@ -226,6 +227,7 @@ paths:
                 name: { type: string, maxLength: 60 }
                 control_mode: { type: string, enum: [host_only, everyone] }
                 queue_mode: { type: string, enum: [everyone, host_only] }
+                permanent: { type: boolean, description: Keep the room (and its link) forever. }
                 pin: { type: string, description: New 4-digit PIN; an empty string removes it. }
       responses:
         '200':

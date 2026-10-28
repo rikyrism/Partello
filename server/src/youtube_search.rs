@@ -148,6 +148,146 @@ impl SearchClient {
     }
 }
 
+/// One playable video of a playlist.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistVideo {
+    pub video_id: String,
+    pub title: String,
+    pub channel: String,
+}
+
+impl SearchClient {
+    /// Up to `max` (≤ 50) embeddable, public, non-live videos of a playlist,
+    /// in playlist order. Costs 2 quota units, so it is not budgeted like search.
+    pub async fn playlist(&self, list_id: &str, max: usize) -> Result<Vec<PlaylistVideo>, AppError> {
+        let Some(key) = &self.api_key else {
+            return Err(AppError::Unavailable(
+                "Playlist import isn't set up on this server. Add the videos one by one.".into(),
+            ));
+        };
+        let items_url = Url::parse_with_params(
+            "https://www.googleapis.com/youtube/v3/playlistItems",
+            [
+                ("part", "contentDetails"),
+                ("maxResults", "50"),
+                ("playlistId", list_id),
+                ("key", key.as_str()),
+            ],
+        )
+        .expect("static url");
+        let body = self.get_playlist(items_url).await?;
+        let ids = parse_playlist_ids(&body)?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let videos_url = Url::parse_with_params(
+            "https://www.googleapis.com/youtube/v3/videos",
+            [("part", "snippet,status"), ("id", ids.join(",").as_str()), ("key", key.as_str())],
+        )
+        .expect("static url");
+        let body = self.get(videos_url).await?;
+        let mut playable = parse_playable(&body)?;
+        // `videos.list` does not keep the request order.
+        let mut out = Vec::new();
+        for id in &ids {
+            if let Some(pos) = playable.iter().position(|v| &v.video_id == id) {
+                out.push(playable.swap_remove(pos));
+            }
+            if out.len() >= max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Like `get`, but a missing playlist is the user's mistake, not an outage.
+    async fn get_playlist(&self, url: Url) -> Result<String, AppError> {
+        let resp = self.http.get(url).send().await.map_err(|err| {
+            tracing::warn!(error = %err.without_url(), "youtube playlist request failed");
+            AppError::Unavailable("YouTube didn't answer. Try again in a moment.".into())
+        })?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        match status.as_u16() {
+            200 => Ok(body),
+            403 | 404 => Err(AppError::InvalidVideo("That playlist is private or doesn't exist".into())),
+            _ => {
+                tracing::warn!(%status, "youtube playlist error");
+                Err(AppError::Unavailable("YouTube didn't answer. Try again in a moment.".into()))
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PlaylistItemsResponse {
+    #[serde(default)]
+    items: Vec<PlaylistItem>,
+}
+
+#[derive(Deserialize)]
+struct PlaylistItem {
+    #[serde(rename = "contentDetails")]
+    content_details: PlaylistItemDetails,
+}
+
+#[derive(Deserialize)]
+struct PlaylistItemDetails {
+    #[serde(rename = "videoId")]
+    video_id: String,
+}
+
+fn parse_playlist_ids(body: &str) -> Result<Vec<String>, AppError> {
+    let parsed: PlaylistItemsResponse =
+        serde_json::from_str(body).map_err(|_| AppError::Unavailable("YouTube returned something unexpected".into()))?;
+    let mut ids: Vec<String> = Vec::new();
+    for item in parsed.items {
+        let id = item.content_details.video_id;
+        if youtube::is_valid_video_id(&id) && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+#[derive(Deserialize)]
+struct StatusVideos {
+    #[serde(default)]
+    items: Vec<StatusVideo>,
+}
+
+#[derive(Deserialize)]
+struct StatusVideo {
+    id: String,
+    snippet: Snippet,
+    status: VideoStatus,
+}
+
+#[derive(Deserialize)]
+struct VideoStatus {
+    #[serde(default)]
+    embeddable: bool,
+    #[serde(rename = "privacyStatus", default)]
+    privacy: String,
+}
+
+fn parse_playable(body: &str) -> Result<Vec<PlaylistVideo>, AppError> {
+    let parsed: StatusVideos =
+        serde_json::from_str(body).map_err(|_| AppError::Unavailable("YouTube returned something unexpected".into()))?;
+    Ok(parsed
+        .items
+        .into_iter()
+        .filter(|v| v.status.embeddable && v.status.privacy != "private")
+        .filter(|v| v.snippet.live != "live" && v.snippet.live != "upcoming")
+        .filter(|v| youtube::is_valid_video_id(&v.id))
+        .map(|v| PlaylistVideo {
+            title: decode_entities(&v.snippet.title),
+            channel: decode_entities(&v.snippet.channel_title),
+            video_id: v.id,
+        })
+        .collect())
+}
+
 /// Trims and collapses whitespace; lowercased so cache keys are shared.
 pub fn normalize_query(q: &str) -> Result<String, AppError> {
     let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -326,6 +466,31 @@ mod tests {
         assert_eq!(normalize_query("  Big   Buck BUNNY ").unwrap(), "big buck bunny");
         assert!(normalize_query("a").is_err());
         assert!(normalize_query(&"x".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn parses_playlists_in_order_and_drops_unplayable() {
+        let ids = parse_playlist_ids(
+            r#"{"items":[{"contentDetails":{"videoId":"aqz-KE-bpKQ"}},{"contentDetails":{"videoId":"dQw4w9WgXcQ"}},{"contentDetails":{"videoId":"aqz-KE-bpKQ"}},{"contentDetails":{"videoId":"bad"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ids, ["aqz-KE-bpKQ", "dQw4w9WgXcQ"], "duplicates and bad ids are dropped");
+        let playable = parse_playable(
+            r#"{"items":[
+                {"id":"dQw4w9WgXcQ","snippet":{"title":"B &amp; C","channelTitle":"Ch"},"status":{"embeddable":true,"privacyStatus":"public"}},
+                {"id":"aqz-KE-bpKQ","snippet":{"title":"No embed","channelTitle":"Ch"},"status":{"embeddable":false,"privacyStatus":"public"}},
+                {"id":"jNQXAC9IVRw","snippet":{"title":"Live","channelTitle":"Ch","liveBroadcastContent":"live"},"status":{"embeddable":true,"privacyStatus":"public"}}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(playable.len(), 1);
+        assert_eq!(playable[0].title, "B & C");
+    }
+
+    #[tokio::test]
+    async fn playlist_disabled_without_key() {
+        let c = SearchClient::new(None, 90);
+        assert!(matches!(c.playlist("PLabc", 50).await, Err(AppError::Unavailable(_))));
     }
 
     #[tokio::test]

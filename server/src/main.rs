@@ -25,8 +25,14 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(addr = %bind, "listening");
+    let hub = app.hub.clone();
     axum::serve(listener, routes::router(app).into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // Save every room's video and queue before connections drop.
+            hub.flush().await;
+            tracing::info!("room state saved");
+        })
         .await?;
     tracing::info!("shut down cleanly");
     Ok(())

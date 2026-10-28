@@ -8,16 +8,17 @@
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    model::{ChatMessage, ControlMode, Participant, QueueMode, RoomInfo, RoomRecord, RoomSettings, VoiceState},
+    model::{ChatMessage, ControlMode, Participant, QueueMode, ReplyRef, RoomInfo, RoomRecord, RoomSettings, VoiceState},
     playback::{PlayStatus, Playback},
     queue::{Queue, QueueItem},
 };
 use crate::{
     error::AppError,
-    realtime::protocol::{IceServer, LeaveReason, LimitsView, PlaybackAction, SIGNAL_MAX_BYTES, ServerEvent},
+    realtime::protocol::{CallMode, IceServer, LeaveReason, LimitsView, PlaybackAction, REACTIONS, SIGNAL_MAX_BYTES, ServerEvent},
     validation,
 };
 
@@ -38,6 +39,24 @@ pub struct RoomLimits {
     pub chat_history: usize,
     pub chat_max_chars: usize,
     pub search_enabled: bool,
+    pub call_mode: CallMode,
+}
+
+/// A host who has been disconnected this long hands host controls to someone
+/// who is still here, so the room is never stuck without anyone to press play.
+pub const HOST_HANDOFF_MS: i64 = 10_000;
+/// After a restart, a video that was playing keeps playing if the server was
+/// back within this window (everyone's players kept running meanwhile).
+pub const RESUME_WINDOW_MS: i64 = 2 * 60 * 1000;
+/// Longest quoted excerpt in a reply.
+const REPLY_EXCERPT_CHARS: usize = 140;
+
+/// What survives a restart or an unload: the current video and the queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedState {
+    pub playback: Playback,
+    pub queue: Vec<QueueItem>,
+    pub saved_at: i64,
 }
 
 #[derive(Debug)]
@@ -67,6 +86,12 @@ pub struct RoomState {
     members: Vec<Member>,
     chat: VecDeque<ChatMessage>,
     limits: RoomLimits,
+    /// Voters to skip `skip_item`; stale once another video plays.
+    skip_votes: Vec<Uuid>,
+    skip_item: Option<Uuid>,
+    /// The host that host controls were taken from while they were away;
+    /// they get them back when they reconnect.
+    handed_off_from: Option<Uuid>,
 }
 
 const ONLY_HOST_PLAYBACK: &str = "Only the host can control playback in this room";
@@ -88,7 +113,32 @@ impl RoomState {
             members: Vec::new(),
             chat: history.into_iter().collect(),
             limits,
+            skip_votes: Vec::new(),
+            skip_item: None,
+            handed_off_from: None,
         }
+    }
+
+    pub fn save(&self, now: i64) -> SavedState {
+        SavedState {
+            playback: self.playback.clone(),
+            queue: self.queue.items(),
+            saved_at: now,
+        }
+    }
+
+    /// Puts back the video and queue from before a restart or unload.
+    pub fn restore(&mut self, saved: SavedState, now: i64) {
+        let mut playback = saved.playback;
+        if playback.status == PlayStatus::Playing && now - saved.saved_at > RESUME_WINDOW_MS {
+            // Long gone: wait at the spot where everyone stopped watching.
+            playback.position = playback.position_at(saved.saved_at);
+            playback.status = PlayStatus::Paused;
+            playback.updated_at = now;
+            playback.version += 1;
+        }
+        self.playback = playback;
+        self.queue = Queue::from_items(saved.queue);
     }
 
     pub fn info(&self) -> RoomInfo {
@@ -153,7 +203,10 @@ impl RoomState {
                 max_voice_participants: self.limits.max_voice,
                 max_queue_len: self.limits.max_queue,
                 search_enabled: self.limits.search_enabled,
+                playlist_import: self.limits.search_enabled,
+                call_mode: self.limits.call_mode,
             },
+            skip_votes: self.current_skip_votes(),
             server_time: now,
         }
     }
@@ -204,7 +257,11 @@ impl RoomState {
             fx.push(Effect::BroadcastExcept(id, ServerEvent::ParticipantJoined { participant: info }));
         } else if member.disconnected_at.take().is_some() || !member.info.connected {
             member.info.connected = true;
-            let info = member.info.clone();
+            if self.handed_off_from == Some(id) {
+                self.handed_off_from = None;
+                self.set_host(id, &mut fx);
+            }
+            let info = self.member(id).unwrap().info.clone();
             fx.push(Effect::Broadcast(ServerEvent::ParticipantUpdated { participant: info }));
         }
         Ok(fx)
@@ -245,7 +302,42 @@ impl RoomState {
         for id in expired {
             fx.extend(self.remove(id, LeaveReason::Disconnected));
         }
+        self.hand_off_host(now, &mut fx);
         fx
+    }
+
+    /// Moves host controls away from a host who has been gone a while.
+    fn hand_off_host(&mut self, now: i64, fx: &mut Effects) {
+        let Some(host) = self.members.iter().find(|m| m.info.is_host) else {
+            return;
+        };
+        let away = !host.info.connected && host.disconnected_at.is_some_and(|t| now - t >= HOST_HANDOFF_MS);
+        if !away {
+            return;
+        }
+        let from = host.info.id;
+        let Some(to) = self.successor(Some(from)) else {
+            return; // nobody else is here
+        };
+        // Remember the original holder only once, across several hand-offs.
+        if self.handed_off_from.is_none() {
+            self.handed_off_from = Some(from);
+        }
+        self.set_host(to, fx);
+        let info = self.member(to).unwrap().info.clone();
+        fx.push(Effect::Broadcast(ServerEvent::ParticipantUpdated { participant: info }));
+    }
+
+    /// Best next host: the room creator if connected, else whoever has been
+    /// here longest and is connected, else anyone still announced.
+    fn successor(&self, except: Option<Uuid>) -> Option<Uuid> {
+        let eligible = || self.members.iter().filter(|m| m.announced && Some(m.info.id) != except);
+        eligible()
+            .find(|m| m.is_creator && m.info.connected)
+            .or_else(|| eligible().filter(|m| m.info.connected).min_by_key(|m| m.info.joined_at))
+            .or_else(|| eligible().find(|m| m.is_creator))
+            .or_else(|| eligible().min_by_key(|m| m.info.joined_at))
+            .map(|m| m.info.id)
     }
 
     /// Explicit leave: immediate removal.
@@ -258,6 +350,10 @@ impl RoomState {
             return Vec::new();
         };
         let member = self.members.remove(idx);
+        self.skip_votes.retain(|v| *v != id);
+        if self.handed_off_from == Some(id) {
+            self.handed_off_from = None;
+        }
         let mut fx = Vec::new();
         if member.announced {
             fx.push(Effect::Broadcast(ServerEvent::ParticipantLeft {
@@ -294,16 +390,9 @@ impl RoomState {
         }
     }
 
-    /// Picks a new host: the room creator if present, otherwise the longest-present member.
+    /// Picks a new host after the host left (see [`Self::successor`]).
     fn elect_host(&mut self, fx: &mut Effects) {
-        let candidate = self
-            .members
-            .iter()
-            .filter(|m| m.announced)
-            .find(|m| m.is_creator)
-            .or_else(|| self.members.iter().find(|m| m.announced))
-            .map(|m| m.info.id);
-        if let Some(id) = candidate {
+        if let Some(id) = self.successor(None) {
             self.set_host(id, fx);
             let info = self.member(id).unwrap().info.clone();
             fx.push(Effect::Broadcast(ServerEvent::ParticipantUpdated { participant: info }));
@@ -330,6 +419,8 @@ impl RoomState {
         }
         self.require(to)?;
         let mut fx = Vec::new();
+        // A deliberate hand-over is final.
+        self.handed_off_from = None;
         self.set_host(to, &mut fx);
         let info = self.member(to).unwrap().info.clone();
         fx.push(Effect::Broadcast(ServerEvent::ParticipantUpdated { participant: info }));
@@ -344,6 +435,7 @@ impl RoomState {
         name: Option<String>,
         control_mode: Option<ControlMode>,
         queue_mode: Option<QueueMode>,
+        permanent: Option<bool>,
         // Some(Some(hash)) sets, Some(None) removes, None leaves it alone.
         password_hash: Option<Option<String>>,
     ) -> Result<Effects, AppError> {
@@ -364,20 +456,31 @@ impl RoomState {
         if let Some(mode) = queue_mode {
             self.settings.queue_mode = mode;
         }
+        if let Some(keep) = permanent {
+            self.settings.permanent = keep;
+        }
         Ok(vec![Effect::Broadcast(ServerEvent::RoomSettingsChanged { room: self.info() })])
     }
 
     // ---------------------------------------------------------------- chat
 
-    pub fn chat(&mut self, actor: Uuid, body: &str, nonce: Option<String>, now: i64) -> Result<Effects, AppError> {
+    pub fn chat(&mut self, actor: Uuid, body: &str, nonce: Option<String>, reply_to: Option<Uuid>, now: i64) -> Result<Effects, AppError> {
         let name = self.require(actor)?.info.display_name.clone();
         let body = validation::chat_body(body, self.limits.chat_max_chars)?;
+        // Replies to messages older than the kept history simply lose the quote.
+        let reply_to = reply_to.and_then(|id| self.chat.iter().find(|m| m.id == id)).map(|m| ReplyRef {
+            id: m.id,
+            participant_id: m.participant_id,
+            display_name: m.display_name.clone(),
+            body: excerpt(&m.body),
+        });
         let message = ChatMessage {
             id: Uuid::new_v4(),
             participant_id: actor,
             display_name: name,
             body,
             created_at: now,
+            reply_to,
             nonce: nonce.filter(|n| n.len() <= crate::realtime::protocol::NONCE_MAX),
         };
         if self.chat.len() >= self.limits.chat_history {
@@ -390,6 +493,76 @@ impl RoomState {
             Effect::Broadcast(ServerEvent::ChatMessageCreated { message }),
             Effect::PersistChat(stored),
         ])
+    }
+
+    // ---------------------------------------------------------------- reactions
+
+    pub fn react(&self, actor: Uuid, emoji: &str) -> Result<Effects, AppError> {
+        self.require(actor)?;
+        if !REACTIONS.contains(&emoji) {
+            return Err(AppError::validation("Unknown reaction"));
+        }
+        Ok(vec![Effect::Broadcast(ServerEvent::Reaction {
+            participant_id: actor,
+            emoji: emoji.to_string(),
+        })])
+    }
+
+    // ---------------------------------------------------------------- skip votes
+
+    fn current_skip_votes(&self) -> Vec<Uuid> {
+        let current = self.playback.item.as_ref().map(|i| i.id);
+        if current.is_some() && current == self.skip_item {
+            self.skip_votes.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Votes needed to skip: a majority of the people connected right now.
+    pub fn skip_votes_needed(&self) -> usize {
+        let connected = self.members.iter().filter(|m| m.announced && m.info.connected).count();
+        connected / 2 + 1
+    }
+
+    pub fn skip_vote(&mut self, actor: Uuid, item_id: Uuid, vote: bool, now: i64) -> Result<Effects, AppError> {
+        self.require(actor)?;
+        let current = self.playback.item.as_ref().map(|i| i.id);
+        if current != Some(item_id) || !matches!(self.playback.status, PlayStatus::Playing | PlayStatus::Paused) {
+            return Ok(Vec::new()); // the video changed meanwhile
+        }
+        if self.skip_item != current {
+            self.skip_item = current;
+            self.skip_votes.clear();
+        }
+        let had = self.skip_votes.contains(&actor);
+        if vote == had {
+            return Ok(Vec::new());
+        }
+        if vote {
+            self.skip_votes.push(actor);
+        } else {
+            self.skip_votes.retain(|v| *v != actor);
+        }
+        let connected: Vec<Uuid> = self
+            .members
+            .iter()
+            .filter(|m| m.announced && m.info.connected)
+            .map(|m| m.info.id)
+            .collect();
+        let counted = self.skip_votes.iter().filter(|v| connected.contains(v)).count();
+        let skipped = vote && counted >= self.skip_votes_needed();
+        let mut fx = vec![Effect::Broadcast(ServerEvent::SkipVotes {
+            item_id,
+            voters: self.skip_votes.clone(),
+            skipped,
+        })];
+        if skipped {
+            self.skip_votes.clear();
+            self.skip_item = None;
+            fx.extend(self.advance(None, now));
+        }
+        Ok(fx)
     }
 
     // ---------------------------------------------------------------- playback
@@ -510,6 +683,32 @@ impl RoomState {
         vec![self.queue_updated(actor)]
     }
 
+    /// Adds several videos at once (a playlist) with one queue update.
+    /// Returns how many fit.
+    pub fn queue_add_many(&mut self, actor: Uuid, items: Vec<QueueItem>, now: i64) -> Result<(Effects, usize), AppError> {
+        self.can_add_to_queue(actor)?;
+        let mut fx = Vec::new();
+        let mut items = items.into_iter();
+        let mut added = 0;
+        if matches!(self.playback.status, PlayStatus::Idle | PlayStatus::Ended) {
+            if let Some(first) = items.next() {
+                self.playback.load(first, true, now);
+                fx.push(self.playback_changed(Some(actor), now));
+                added += 1;
+            }
+        }
+        for item in items {
+            if !self.queue.push(item, self.limits.max_queue) {
+                break;
+            }
+            added += 1;
+        }
+        if added > fx.len() {
+            fx.push(self.queue_updated(Some(actor)));
+        }
+        Ok((fx, added))
+    }
+
     /// Replaces the current video immediately.
     pub fn play_now(&mut self, actor: Option<Uuid>, item: QueueItem, now: i64) -> Effects {
         self.playback.load(item, true, now);
@@ -568,10 +767,7 @@ impl RoomState {
     pub fn voice_join(&mut self, actor: Uuid, state: VoiceState) -> Result<Effects, AppError> {
         let in_call = self.require(actor)?.info.voice.is_some();
         if !in_call && self.voice_count() >= self.limits.max_voice as usize {
-            return Err(AppError::Conflict(format!(
-                "The call is full ({} people). Calls are peer-to-peer and limited for quality",
-                self.limits.max_voice
-            )));
+            return Err(AppError::Conflict(format!("The call is full ({} people)", self.limits.max_voice)));
         }
         self.member_mut(actor).unwrap().info.voice = Some(state);
         Ok(vec![self.voice_update_effect(actor)])
@@ -617,4 +813,12 @@ impl RoomState {
         }
         Ok(vec![Effect::To(to, ServerEvent::VoiceSignal { from: actor, data })])
     }
+}
+
+fn excerpt(body: &str) -> String {
+    let mut out: String = body.chars().take(REPLY_EXCERPT_CHARS).collect();
+    if body.chars().count() > REPLY_EXCERPT_CHARS {
+        out.push('…');
+    }
+    out
 }

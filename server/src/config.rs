@@ -30,6 +30,18 @@ pub struct Config {
     pub youtube_api_key: Option<String>,
     /// Uncached searches allowed per day across the whole server (100 quota units each).
     pub youtube_search_daily_budget: u32,
+    /// LiveKit SFU for calls; `None` keeps the peer-to-peer mesh.
+    pub livekit: Option<LiveKitConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveKitConfig {
+    /// Address browsers connect to (`wss://…`).
+    pub url: String,
+    /// Address this server calls for admin requests (defaults to `url` over https).
+    pub api_url: String,
+    pub api_key: String,
+    pub api_secret: String,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +67,18 @@ pub struct IceConfig {
     /// coturn `static-auth-secret`; used to mint short-lived credentials.
     pub turn_shared_secret: Option<String>,
     pub turn_credential_ttl: Duration,
+    /// Fixed TURN credentials (e.g. a free Metered.ca account). Visible to
+    /// everyone in a room, so prefer short-lived ones when available.
+    pub turn_username: Option<String>,
+    pub turn_credential: Option<String>,
+    /// Cloudflare Realtime TURN: credentials are generated on demand.
+    pub cloudflare_turn: Option<CloudflareTurn>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CloudflareTurn {
+    pub key_id: String,
+    pub api_token: String,
 }
 
 impl Default for Limits {
@@ -107,6 +131,41 @@ impl Config {
             turn_urls: list("TURN_URLS").unwrap_or_default(),
             turn_shared_secret: env::var("TURN_SHARED_SECRET").ok().filter(|s| !s.is_empty()),
             turn_credential_ttl: Duration::from_secs(parse_or("TURN_CREDENTIAL_TTL_SECS", 6 * 3600)?),
+            turn_username: non_empty("TURN_USERNAME"),
+            turn_credential: non_empty("TURN_CREDENTIAL"),
+            cloudflare_turn: match (non_empty("CLOUDFLARE_TURN_KEY_ID"), non_empty("CLOUDFLARE_TURN_API_TOKEN")) {
+                (Some(key_id), Some(api_token)) => Some(CloudflareTurn { key_id, api_token }),
+                _ => None,
+            },
+        };
+
+        let livekit = match (
+            non_empty("LIVEKIT_URL"),
+            non_empty("LIVEKIT_API_KEY"),
+            non_empty("LIVEKIT_API_SECRET"),
+        ) {
+            (Some(url), Some(api_key), Some(api_secret)) => {
+                let url = url.trim_end_matches('/').to_string();
+                let api_url =
+                    non_empty("LIVEKIT_API_URL").unwrap_or_else(|| url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1));
+                Some(LiveKitConfig {
+                    url,
+                    api_url: api_url.trim_end_matches('/').to_string(),
+                    api_key,
+                    api_secret,
+                })
+            }
+            _ => None,
+        };
+        // An SFU carries many more people than a peer-to-peer mesh.
+        let voice_default = if livekit.is_some() {
+            limits.max_participants
+        } else {
+            defaults.max_voice_participants
+        };
+        let limits = Limits {
+            max_voice_participants: parse_or("ROOM_MAX_VOICE", voice_default)?,
+            ..limits
         };
 
         Ok(Self {
@@ -123,6 +182,7 @@ impl Config {
             youtube_oembed: parse_or("YOUTUBE_OEMBED", true)?,
             youtube_api_key: env::var("YOUTUBE_API_KEY").ok().filter(|s| !s.is_empty()),
             youtube_search_daily_budget: parse_or("YOUTUBE_SEARCH_DAILY_BUDGET", 90)?,
+            livekit,
         })
     }
 
@@ -146,27 +206,50 @@ impl Config {
                 turn_urls: vec![],
                 turn_shared_secret: None,
                 turn_credential_ttl: Duration::from_secs(3600),
+                turn_username: None,
+                turn_credential: None,
+                cloudflare_turn: None,
             },
             youtube_oembed: false,
             youtube_api_key: None,
             youtube_search_daily_budget: 90,
+            livekit: None,
         }
     }
 
     /// One-line description for startup logs. Never includes secrets.
     pub fn redacted_summary(&self) -> String {
         format!(
-            "bind={} store={} origins={:?} static_dir={:?} turn_urls={} turn_secret={} oembed={} youtube_search={}",
+            "bind={} store={} origins={:?} static_dir={:?} turn={} oembed={} youtube_search={} calls={}",
             self.bind_addr,
             if self.database_url.is_some() { "postgres" } else { "memory" },
             self.allowed_origins,
             self.static_dir,
-            self.ice.turn_urls.len(),
-            if self.ice.turn_shared_secret.is_some() { "set" } else { "unset" },
+            self.ice.mode(),
             self.youtube_oembed,
             if self.youtube_api_key.is_some() { "enabled" } else { "disabled" },
+            if self.livekit.is_some() { "sfu" } else { "mesh" },
         )
     }
+}
+
+impl IceConfig {
+    /// Which TURN source is active, for logs (never the secrets themselves).
+    pub fn mode(&self) -> &'static str {
+        if self.cloudflare_turn.is_some() {
+            "cloudflare"
+        } else if !self.turn_urls.is_empty() && self.turn_shared_secret.is_some() {
+            "coturn"
+        } else if !self.turn_urls.is_empty() && self.turn_username.is_some() && self.turn_credential.is_some() {
+            "static"
+        } else {
+            "none"
+        }
+    }
+}
+
+fn non_empty(key: &str) -> Option<String> {
+    env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 fn list(key: &str) -> Option<Vec<String>> {

@@ -76,6 +76,49 @@ pub fn parse_video_url(input: &str) -> Result<ParsedVideo, AppError> {
     Ok(ParsedVideo { video_id, start })
 }
 
+/// The `list=` id of a YouTube playlist link.
+pub fn parse_playlist_url(input: &str) -> Result<String, AppError> {
+    let input = input.trim();
+    if input.len() > MAX_URL_LEN {
+        return Err(AppError::InvalidVideo("That link is too long".into()));
+    }
+    let with_scheme = if input.starts_with("http://") || input.starts_with("https://") {
+        input.to_string()
+    } else {
+        format!("https://{input}")
+    };
+    let url = Url::parse(&with_scheme).map_err(|_| no_playlist())?;
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let host = host.strip_prefix("m.").unwrap_or(host);
+    if !matches!(host, "youtube.com" | "music.youtube.com" | "youtu.be") {
+        return Err(AppError::InvalidVideo("Only YouTube links are supported for now".into()));
+    }
+    let id = url
+        .query_pairs()
+        .find(|(k, _)| k == "list")
+        .map(|(_, v)| v.into_owned())
+        .ok_or_else(no_playlist)?;
+    if !is_valid_playlist_id(&id) {
+        return Err(no_playlist());
+    }
+    // Mixes ("RD…") are generated per viewer and cannot be listed.
+    if id.starts_with("RD") {
+        return Err(AppError::InvalidVideo(
+            "YouTube mixes are made for each viewer and can't be imported. Use a regular playlist.".into(),
+        ));
+    }
+    Ok(id)
+}
+
+pub fn is_valid_playlist_id(id: &str) -> bool {
+    (2..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn no_playlist() -> AppError {
+    AppError::InvalidVideo("That link has no YouTube playlist in it".into())
+}
+
 fn invalid() -> AppError {
     AppError::InvalidVideo("That doesn't look like a YouTube video link".into())
 }
@@ -208,6 +251,22 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_playlist_links() {
+        assert_eq!(
+            parse_playlist_url("https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf").unwrap(),
+            "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+        );
+        assert_eq!(
+            parse_playlist_url("youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG&index=2").unwrap(),
+            "PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG"
+        );
+        assert!(parse_playlist_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ").is_err());
+        assert!(parse_playlist_url("https://www.youtube.com/watch?v=YEhzWw8qQWk&list=RDYEhzWw8qQWk&start_radio=1").is_err());
+        assert!(parse_playlist_url("https://evil.example/playlist?list=PLabc").is_err());
+        assert!(parse_playlist_url("https://youtube.com/playlist?list=bad%20id").is_err());
+    }
 
     #[test]
     fn parses_common_shapes() {

@@ -14,7 +14,8 @@ use crate::{
     AppState,
     error::{ApiJson, ApiQuery, AppError, AppResult},
     rate_limit::client_ip_with,
-    room::model::{ControlMode, QueueMode, RoomInfo, RoomSettings},
+    realtime::hub::SettingsChange,
+    room::model::{RoomInfo, RoomSettings},
     validation,
 };
 
@@ -60,16 +61,6 @@ pub struct JoinResponse {
     pub session_token: String,
     pub is_creator: bool,
     pub room: RoomInfo,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateSettingsRequest {
-    pub name: Option<String>,
-    pub control_mode: Option<ControlMode>,
-    pub queue_mode: Option<QueueMode>,
-    /// New 4-digit PIN; an empty string removes it.
-    pub pin: Option<String>,
 }
 
 pub(crate) fn ip(app: &AppState, headers: &HeaderMap, peer: SocketAddr) -> std::net::IpAddr {
@@ -163,13 +154,10 @@ pub async fn update_settings(
     State(app): State<AppState>,
     Path(slug): Path<String>,
     headers: HeaderMap,
-    ApiJson(req): ApiJson<UpdateSettingsRequest>,
+    ApiJson(change): ApiJson<SettingsChange>,
 ) -> AppResult<Json<RoomInfo>> {
     let token = bearer(&headers).ok_or(AppError::Unauthorized)?;
-    let room = app
-        .hub
-        .update_settings(&slug, token, req.name, req.control_mode, req.queue_mode, req.pin)
-        .await?;
+    let room = app.hub.update_settings(&slug, token, change).await?;
     Ok(Json(room))
 }
 

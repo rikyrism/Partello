@@ -97,6 +97,7 @@ struct Limits {
     queue: TokenBucket,
     playback: TokenBucket,
     signal: TokenBucket,
+    react: TokenBucket,
 }
 
 impl Limits {
@@ -107,6 +108,7 @@ impl Limits {
             queue: TokenBucket::new(5, 0.5),
             playback: TokenBucket::new(12, 4.0),
             signal: TokenBucket::new(300, 60.0),
+            react: TokenBucket::new(10, 3.0),
         }
     }
 
@@ -121,7 +123,12 @@ impl Limits {
         }
         match ev {
             ClientEvent::ChatSend { .. } => self.chat.try_take(),
-            ClientEvent::QueueAdd { .. } | ClientEvent::QueueRemove { .. } | ClientEvent::QueueMove { .. } => self.queue.try_take(),
+            ClientEvent::QueueAdd { .. }
+            | ClientEvent::QueueAddPlaylist { .. }
+            | ClientEvent::QueueRemove { .. }
+            | ClientEvent::QueueMove { .. } => self.queue.try_take(),
+            ClientEvent::React { .. } => self.react.try_take(),
+            ClientEvent::SkipVote { .. } => self.playback.try_take(),
             ClientEvent::PlaybackControl { .. } | ClientEvent::QueuePlay { .. } | ClientEvent::QueueSkip => self.playback.try_take(),
             _ => true,
         }
@@ -130,7 +137,9 @@ impl Limits {
 
 fn nonce_of(ev: &ClientEvent) -> Option<String> {
     match ev {
-        ClientEvent::ChatSend { nonce, .. } | ClientEvent::QueueAdd { nonce, .. } => nonce.clone(),
+        ClientEvent::ChatSend { nonce, .. } | ClientEvent::QueueAdd { nonce, .. } | ClientEvent::QueueAddPlaylist { nonce, .. } => {
+            nonce.clone()
+        }
         _ => None,
     }
 }

@@ -3,7 +3,7 @@
 
 use partello::{
     database::{ApiKeyRecord, Store, now_ms},
-    room::model::{ChatMessage, ControlMode, QueueMode, RoomRecord, RoomSettings},
+    room::model::{ChatMessage, ControlMode, QueueMode, ReplyRef, RoomRecord, RoomSettings},
     security,
 };
 use uuid::Uuid;
@@ -48,6 +48,7 @@ async fn rooms_chat_and_keys_round_trip() {
     let settings = RoomSettings {
         control_mode: ControlMode::Everyone,
         queue_mode: QueueMode::HostOnly,
+        permanent: false,
     };
     store.update_room(room.id, "Renamed", settings, None).await.unwrap();
     let loaded = store.room_by_slug(&room.slug).await.unwrap().unwrap();
@@ -62,6 +63,12 @@ async fn rooms_chat_and_keys_round_trip() {
             display_name: "Ana".into(),
             body: format!("message {i}"),
             created_at: now_ms() + i,
+            reply_to: (i == 4).then(|| ReplyRef {
+                id: Uuid::new_v4(),
+                participant_id: Uuid::new_v4(),
+                display_name: "Riky".into(),
+                body: "what are we watching?".into(),
+            }),
             nonce: None,
         };
         store.insert_chat(room.id, &msg).await.unwrap();
@@ -71,6 +78,17 @@ async fn rooms_chat_and_keys_round_trip() {
         recent.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
         ["message 2", "message 3", "message 4"]
     );
+    assert_eq!(
+        recent[2].reply_to.as_ref().unwrap().display_name,
+        "Riky",
+        "replies keep their quote"
+    );
+    assert!(recent[1].reply_to.is_none());
+
+    assert_eq!(store.room_state(room.id).await.unwrap(), None);
+    store.save_room_state(room.id, r#"{"queue":[],"saved_at":1}"#).await.unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&store.room_state(room.id).await.unwrap().unwrap()).unwrap();
+    assert_eq!(saved["saved_at"], 1);
 
     let key = ApiKeyRecord {
         id: Uuid::new_v4(),
@@ -90,4 +108,11 @@ async fn rooms_chat_and_keys_round_trip() {
     store.delete_inactive_rooms(now_ms() + 60_000).await.unwrap();
     assert!(store.room_by_slug(&room.slug).await.unwrap().is_none());
     assert!(store.recent_chat(room.id, 10).await.unwrap().is_empty());
+
+    // Permanent rooms are never purged.
+    let mut kept = record();
+    kept.settings.permanent = true;
+    assert!(store.insert_room(&kept).await.unwrap());
+    store.delete_inactive_rooms(now_ms() + 60_000).await.unwrap();
+    assert!(store.room_by_slug(&kept.slug).await.unwrap().unwrap().settings.permanent);
 }

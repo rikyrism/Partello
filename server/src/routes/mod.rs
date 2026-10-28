@@ -37,11 +37,20 @@ fn csp(app: &AppState) -> String {
                 .or_else(|| o.strip_prefix("http://").map(|h| format!("ws://{h}")))
         })
         .collect();
+    // The LiveKit SFU, when calls go through one, is another socket origin.
+    let sfu = app
+        .config
+        .livekit
+        .as_ref()
+        .and_then(|lk| url::Url::parse(&lk.url).ok())
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default();
+    let sfu_https = sfu.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1);
     format!(
         "default-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; \
          frame-src https://www.youtube.com https://www.youtube-nocookie.com; \
          img-src 'self' data: blob: https://i.ytimg.com; media-src 'self' blob:; \
-         style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' {}; \
+         style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' {} {sfu} {sfu_https}; \
          object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
         sockets.join(" ")
     )

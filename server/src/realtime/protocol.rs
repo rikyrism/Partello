@@ -15,6 +15,9 @@ use crate::room::{
 pub const NONCE_MAX: usize = 64;
 /// Max serialized size of one WebRTC signal (SDP with many candidates fits easily).
 pub const SIGNAL_MAX_BYTES: usize = 24 * 1024;
+/// Emoji people can float over the video. A fixed set keeps the overlay tidy
+/// and gives the server nothing arbitrary to relay.
+pub const REACTIONS: [&str; 8] = ["😂", "🔥", "😱", "❤️", "👏", "😭", "🤯", "👀"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,23 +30,77 @@ pub enum PlaybackAction {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
-    Auth { token: String },
-    Ping { t: f64 },
-    ChatSend { body: String, nonce: Option<String> },
-    PlaybackControl { action: PlaybackAction, position: f64 },
-    PlaybackDuration { item_id: Uuid, duration: f64 },
-    PlaybackEnded { item_id: Uuid },
-    QueueAdd { url: String, nonce: Option<String> },
-    QueueRemove { item_id: Uuid },
-    QueuePlay { item_id: Uuid },
-    QueueMove { item_id: Uuid, to_index: usize },
+    Auth {
+        token: String,
+    },
+    Ping {
+        t: f64,
+    },
+    ChatSend {
+        body: String,
+        nonce: Option<String>,
+        /// Id of the message this one answers.
+        #[serde(default)]
+        reply_to: Option<Uuid>,
+    },
+    PlaybackControl {
+        action: PlaybackAction,
+        position: f64,
+    },
+    PlaybackDuration {
+        item_id: Uuid,
+        duration: f64,
+    },
+    PlaybackEnded {
+        item_id: Uuid,
+    },
+    QueueAdd {
+        url: String,
+        nonce: Option<String>,
+    },
+    /// Every video of a YouTube playlist (needs the YouTube Data API key).
+    QueueAddPlaylist {
+        url: String,
+        nonce: Option<String>,
+    },
+    QueueRemove {
+        item_id: Uuid,
+    },
+    QueuePlay {
+        item_id: Uuid,
+    },
+    QueueMove {
+        item_id: Uuid,
+        to_index: usize,
+    },
     QueueSkip,
-    VoiceJoin { muted: bool, camera: bool },
+    VoiceJoin {
+        muted: bool,
+        camera: bool,
+    },
     VoiceLeave,
-    VoiceUpdate { muted: bool, camera: bool },
-    VoiceSignal { to: Uuid, data: serde_json::Value },
-    HostTransfer { to: Uuid },
-    Kick { participant_id: Uuid },
+    VoiceUpdate {
+        muted: bool,
+        camera: bool,
+    },
+    VoiceSignal {
+        to: Uuid,
+        data: serde_json::Value,
+    },
+    HostTransfer {
+        to: Uuid,
+    },
+    Kick {
+        participant_id: Uuid,
+    },
+    React {
+        emoji: String,
+    },
+    /// Vote (or take back a vote) to skip the current video.
+    SkipVote {
+        item_id: Uuid,
+        vote: bool,
+    },
     Leave,
 }
 
@@ -58,6 +115,7 @@ impl ClientEvent {
             ClientEvent::PlaybackDuration { .. } => "playback_duration",
             ClientEvent::PlaybackEnded { .. } => "playback_ended",
             ClientEvent::QueueAdd { .. } => "queue_add",
+            ClientEvent::QueueAddPlaylist { .. } => "queue_add_playlist",
             ClientEvent::QueueRemove { .. } => "queue_remove",
             ClientEvent::QueuePlay { .. } => "queue_play",
             ClientEvent::QueueMove { .. } => "queue_move",
@@ -68,6 +126,8 @@ impl ClientEvent {
             ClientEvent::VoiceSignal { .. } => "voice_signal",
             ClientEvent::HostTransfer { .. } => "host_transfer",
             ClientEvent::Kick { .. } => "kick",
+            ClientEvent::React { .. } => "react",
+            ClientEvent::SkipVote { .. } => "skip_vote",
             ClientEvent::Leave => "leave",
         }
     }
@@ -89,6 +149,17 @@ pub struct LimitsView {
     pub max_queue_len: usize,
     /// Whether `GET /api/rooms/{slug}/search` is configured.
     pub search_enabled: bool,
+    /// Whether `queue_add_playlist` works (same YouTube Data API key).
+    pub playlist_import: bool,
+    /// `mesh` (peer-to-peer) or `sfu` (LiveKit; media goes through a server).
+    pub call_mode: CallMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallMode {
+    Mesh,
+    Sfu,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -111,6 +182,8 @@ pub enum ServerEvent {
         chat: Vec<ChatMessage>,
         ice_servers: Vec<IceServer>,
         limits: LimitsView,
+        /// Who voted to skip the current video.
+        skip_votes: Vec<Uuid>,
         server_time: i64,
     },
     ParticipantJoined {
@@ -147,6 +220,21 @@ pub enum ServerEvent {
     },
     RoomSettingsChanged {
         room: RoomInfo,
+    },
+    Reaction {
+        participant_id: Uuid,
+        emoji: String,
+    },
+    SkipVotes {
+        item_id: Uuid,
+        voters: Vec<Uuid>,
+        /// True when this vote reached the majority and the video was skipped.
+        skipped: bool,
+    },
+    /// Credentials for the SFU call, sent to a participant who joined the call.
+    CallToken {
+        url: String,
+        token: String,
     },
     Pong {
         t: f64,

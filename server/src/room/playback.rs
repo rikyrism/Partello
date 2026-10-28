@@ -5,14 +5,14 @@
 //! compute the current position from that. Clients do the same arithmetic with
 //! their estimated server clock offset.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::queue::QueueItem;
 
 /// Longest position we accept when the duration is still unknown (24h).
 const MAX_POSITION: f64 = 86_400.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayStatus {
     /// Nothing loaded.
@@ -23,7 +23,7 @@ pub enum PlayStatus {
     Ended,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playback {
     pub item: Option<QueueItem>,
     pub status: PlayStatus,

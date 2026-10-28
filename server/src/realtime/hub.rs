@@ -21,19 +21,23 @@ use axum::extract::ws::{Message, Utf8Bytes};
 use tokio::sync::{Notify, mpsc};
 use uuid::Uuid;
 
-use super::protocol::{ClientEvent, IceServer, ServerEvent};
+use super::protocol::{CallMode, ClientEvent, ServerEvent};
 use crate::{
     config::Config,
     database::{Store, now_ms},
     error::AppError,
+    ice::IceProvider,
     rate_limit::KeyedLimiter,
     room::{
         model::{ChatMessage, ControlMode, QueueMode, RoomInfo, RoomRecord, RoomSettings, VoiceState},
         queue::QueueItem,
-        state::{Effect, Effects, RoomLimits, RoomState},
+        state::{Effect, Effects, HOST_HANDOFF_MS, RoomLimits, RoomState, SavedState},
     },
-    security, validation,
+    security,
+    sfu::Sfu,
+    validation,
     youtube::{self, YoutubeClient},
+    youtube_search::SearchClient,
 };
 
 /// Seats reserved by a REST join but never connected are released after this.
@@ -99,6 +103,10 @@ struct LiveInner {
     /// Recent queue_add requests by (participant, nonce), so a request the
     /// client re-sends after a dropped connection is not added twice.
     adds: VecDeque<((Uuid, String), AddState)>,
+    /// The video or queue changed since the last save.
+    dirty: bool,
+    room_id: Uuid,
+    sfu: Option<Arc<Sfu>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +134,9 @@ pub struct Hub {
     pub store: Store,
     config: Arc<Config>,
     youtube: YoutubeClient,
+    search: Arc<SearchClient>,
+    ice: IceProvider,
+    sfu: Option<Arc<Sfu>>,
     rooms: Mutex<HashMap<String, Arc<LiveRoom>>>,
     sessions: Mutex<HashMap<Vec<u8>, Session>>,
     load_lock: tokio::sync::Mutex<()>,
@@ -162,6 +173,13 @@ impl LiveInner {
         for effect in effects {
             match effect {
                 Effect::Broadcast(ev) => {
+                    match &ev {
+                        ServerEvent::PlaybackChanged { .. } | ServerEvent::QueueUpdated { .. } => self.dirty = true,
+                        // Whoever leaves the room leaves its call too, even if
+                        // their LiveKit connection is still up (kicked people).
+                        ServerEvent::ParticipantLeft { participant_id, .. } => self.evict_from_call(*participant_id),
+                        _ => {}
+                    }
                     let msg = encode(&ev);
                     let ids: Vec<Uuid> = self.conns.keys().copied().collect();
                     for pid in ids {
@@ -181,13 +199,23 @@ impl LiveInner {
         }
         persist
     }
+
+    fn evict_from_call(&self, pid: Uuid) {
+        if let Some(sfu) = self.sfu.clone() {
+            let room_id = self.room_id;
+            tokio::spawn(async move { sfu.remove(room_id, pid).await });
+        }
+    }
 }
 
 impl Hub {
-    pub fn new(store: Store, config: Arc<Config>) -> Self {
+    pub fn new(store: Store, config: Arc<Config>, search: Arc<SearchClient>) -> Self {
         Self {
             store,
             youtube: YoutubeClient::new(config.youtube_oembed),
+            search,
+            ice: IceProvider::new(config.ice.clone()),
+            sfu: config.livekit.clone().map(|lk| Arc::new(Sfu::new(lk))),
             config,
             rooms: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
@@ -206,6 +234,7 @@ impl Hub {
             chat_history: l.chat_history_len,
             chat_max_chars: l.chat_max_chars,
             search_enabled: self.config.youtube_api_key.is_some(),
+            call_mode: if self.sfu.is_some() { CallMode::Sfu } else { CallMode::Mesh },
         }
     }
 
@@ -268,17 +297,27 @@ impl Hub {
         }
         let record = self.store.room_by_slug(slug).await?.ok_or(AppError::RoomNotFound)?;
         let history = self.store.recent_chat(record.id, self.config.limits.chat_history_len).await?;
+        let mut state = RoomState::new(&record, self.limits(), history, now_ms());
+        if let Some(json) = self.store.room_state(record.id).await? {
+            match serde_json::from_str::<SavedState>(&json) {
+                Ok(saved) => state.restore(saved, now_ms()),
+                Err(err) => tracing::warn!(room = %slug, error = %err, "ignoring unreadable saved room state"),
+            }
+        }
         let room = Arc::new(LiveRoom {
             slug: record.slug.clone(),
             id: record.id,
             inner: Mutex::new(LiveInner {
-                state: RoomState::new(&record, self.limits(), history, now_ms()),
+                state,
                 conns: HashMap::new(),
                 empty_since: Some(now_ms()),
                 unloaded: false,
                 pin_failures: 0,
                 bans: HashMap::new(),
                 adds: VecDeque::new(),
+                dirty: false,
+                room_id: record.id,
+                sfu: self.sfu.clone(),
             }),
         });
         self.rooms.lock().unwrap().insert(slug.to_string(), room.clone());
@@ -399,29 +438,6 @@ impl Hub {
         self.sessions.lock().unwrap().retain(|_, s| s.participant_id != participant_id);
     }
 
-    fn ice_servers(&self, participant_id: Uuid) -> Vec<IceServer> {
-        let ice = &self.config.ice;
-        let mut out = Vec::new();
-        if !ice.stun_urls.is_empty() {
-            out.push(IceServer {
-                urls: ice.stun_urls.clone(),
-                username: None,
-                credential: None,
-            });
-        }
-        if let (false, Some(secret)) = (ice.turn_urls.is_empty(), &ice.turn_shared_secret) {
-            let expires = now_ms() / 1000 + ice.turn_credential_ttl.as_secs() as i64;
-            let tag = participant_id.simple().to_string();
-            let (username, credential) = security::turn_credentials(secret, &tag[..12], expires);
-            out.push(IceServer {
-                urls: ice.turn_urls.clone(),
-                username: Some(username),
-                credential: Some(credential),
-            });
-        }
-        out
-    }
-
     // ------------------------------------------------------------ connections
 
     /// Registers an authenticated connection and sends it the full room state.
@@ -433,7 +449,7 @@ impl Hub {
     ) -> Result<(Arc<LiveRoom>, u64), AppError> {
         let pid = session.participant_id;
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
-        let ice = self.ice_servers(pid);
+        let ice = self.ice.servers(pid).await;
         loop {
             let room = self.load(&session.slug).await?;
             let mut inner = room.inner.lock().unwrap();
@@ -477,14 +493,17 @@ impl Hub {
         inner.dispatch(effects);
         drop(inner);
 
-        // Remove the participant if they do not come back within the grace window.
-        let hub = self.clone();
-        let room = room.clone();
+        // Hand host controls on if a host does not come back soon, and remove
+        // the participant if they do not come back within the grace window.
         let grace = self.config.limits.reconnect_grace;
-        tokio::spawn(async move {
-            tokio::time::sleep(grace + Duration::from_millis(50)).await;
-            hub.sweep_room(&room, now_ms());
-        });
+        for after in [Duration::from_millis(HOST_HANDOFF_MS as u64), grace] {
+            let hub = self.clone();
+            let room = room.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(after + Duration::from_millis(50)).await;
+                hub.sweep_room(&room, now_ms());
+            });
+        }
     }
 
     fn sweep_room(&self, room: &LiveRoom, now: i64) {
@@ -550,7 +569,10 @@ impl Hub {
     /// Applies one client event. Errors are reported back to the sender only.
     pub async fn handle(&self, room: &LiveRoom, pid: Uuid, event: ClientEvent) -> Result<(), AppError> {
         if let ClientEvent::QueueAdd { url, nonce } = &event {
-            return self.queue_add(room, pid, url, nonce.clone()).await;
+            return self.queue_add(room, pid, url, nonce.clone(), false).await;
+        }
+        if let ClientEvent::QueueAddPlaylist { url, nonce } = &event {
+            return self.queue_add(room, pid, url, nonce.clone(), true).await;
         }
         if let ClientEvent::Kick { participant_id } = event {
             return self.kick(room, pid, participant_id);
@@ -558,9 +580,12 @@ impl Hub {
         let now = now_ms();
         let persist = {
             let mut inner = room.inner.lock().unwrap();
+            let room_id = inner.room_id;
             let s = &mut inner.state;
             let effects = match event {
-                ClientEvent::ChatSend { body, nonce } => s.chat(pid, &body, nonce, now)?,
+                ClientEvent::ChatSend { body, nonce, reply_to } => s.chat(pid, &body, nonce, reply_to, now)?,
+                ClientEvent::React { emoji } => s.react(pid, &emoji)?,
+                ClientEvent::SkipVote { item_id, vote } => s.skip_vote(pid, item_id, vote, now)?,
                 ClientEvent::PlaybackControl { action, position } => s.playback_control(pid, action, position, now)?,
                 ClientEvent::PlaybackDuration { item_id, duration } => s.playback_duration(pid, item_id, duration)?,
                 ClientEvent::PlaybackEnded { item_id } => s.playback_ended(pid, item_id, now)?,
@@ -568,9 +593,27 @@ impl Hub {
                 ClientEvent::QueuePlay { item_id } => s.queue_play(pid, item_id, now)?,
                 ClientEvent::QueueMove { item_id, to_index } => s.queue_move(pid, item_id, to_index)?,
                 ClientEvent::QueueSkip => s.queue_skip(pid, now)?,
-                ClientEvent::VoiceJoin { muted, camera } => s.voice_join(pid, VoiceState { muted, camera })?,
+                ClientEvent::VoiceJoin { muted, camera } => {
+                    let mut fx = s.voice_join(pid, VoiceState { muted, camera })?;
+                    // Admitted to the call: hand out the key to its SFU room.
+                    if let (Some(sfu), Some(me)) = (&self.sfu, s.participant(pid)) {
+                        let token = sfu.join_token(room_id, pid, &me.display_name);
+                        fx.push(Effect::To(
+                            pid,
+                            ServerEvent::CallToken {
+                                url: sfu.url().to_string(),
+                                token,
+                            },
+                        ));
+                    }
+                    fx
+                }
                 ClientEvent::VoiceUpdate { muted, camera } => s.voice_update(pid, VoiceState { muted, camera })?,
-                ClientEvent::VoiceLeave => s.voice_leave(pid)?,
+                ClientEvent::VoiceLeave => {
+                    let fx = s.voice_leave(pid)?;
+                    inner.evict_from_call(pid);
+                    fx
+                }
                 // Signals racing a peer leaving the call are dropped quietly:
                 // the sender learns about the departure from presence events.
                 ClientEvent::VoiceSignal { to, data } => s.voice_signal(pid, to, data).unwrap_or_default(),
@@ -580,6 +623,7 @@ impl Hub {
                 | ClientEvent::Ping { .. }
                 | ClientEvent::Leave
                 | ClientEvent::QueueAdd { .. }
+                | ClientEvent::QueueAddPlaylist { .. }
                 | ClientEvent::Kick { .. } => Vec::new(),
             };
             inner.dispatch(effects)
@@ -608,7 +652,31 @@ impl Hub {
         })
     }
 
-    async fn queue_add(&self, room: &LiveRoom, pid: Uuid, url: &str, nonce: Option<String>) -> Result<(), AppError> {
+    /// Up to this many videos of a playlist go into the queue at once.
+    const PLAYLIST_MAX: usize = 50;
+
+    async fn resolve_playlist(&self, url: &str, added_by: Uuid, added_by_name: String, max: usize) -> Result<Vec<QueueItem>, AppError> {
+        let list_id = youtube::parse_playlist_url(url)?;
+        let videos = self.search.playlist(&list_id, max.min(Self::PLAYLIST_MAX)).await?;
+        if videos.is_empty() {
+            return Err(AppError::InvalidVideo("That playlist has no videos that can play here".into()));
+        }
+        Ok(videos
+            .into_iter()
+            .map(|v| QueueItem {
+                id: Uuid::new_v4(),
+                thumbnail_url: format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", v.video_id),
+                video_id: v.video_id,
+                title: v.title,
+                author: Some(v.channel).filter(|c| !c.is_empty()),
+                start: None,
+                added_by,
+                added_by_name: added_by_name.clone(),
+            })
+            .collect())
+    }
+
+    async fn queue_add(&self, room: &LiveRoom, pid: Uuid, url: &str, nonce: Option<String>, playlist: bool) -> Result<(), AppError> {
         let nonce = nonce.filter(|n| n.len() <= super::protocol::NONCE_MAX);
         let key = nonce.clone().map(|n| (pid, n));
         // Check permission before the network round trip, and again after it.
@@ -638,8 +706,13 @@ impl Hub {
                 }
                 inner.adds.push_back((key.clone(), AddState::InFlight));
             }
-            inner.state.participant(pid).map(|p| p.display_name.clone()).unwrap_or_default()
+            let room_left = self.config.limits.max_queue_len.saturating_sub(inner.state.queue.len()) + 1;
+            (
+                inner.state.participant(pid).map(|p| p.display_name.clone()).unwrap_or_default(),
+                room_left,
+            )
         };
+        let (name, room_left) = name;
         let finish = |room: &LiveRoom, done: bool| {
             if let Some(key) = &key {
                 let mut inner = room.inner.lock().unwrap();
@@ -652,16 +725,21 @@ impl Hub {
                 }
             }
         };
-        let item = match self.resolve_video(url, pid, name).await {
-            Ok(item) => item,
+        let items = if playlist {
+            self.resolve_playlist(url, pid, name, room_left).await
+        } else {
+            self.resolve_video(url, pid, name).await.map(|item| vec![item])
+        };
+        let items = match items {
+            Ok(items) => items,
             Err(err) => {
                 finish(room, false);
                 return Err(err);
             }
         };
         let mut inner = room.inner.lock().unwrap();
-        let mut effects = match inner.state.queue_add(pid, item, now_ms()) {
-            Ok(fx) => fx,
+        let mut effects = match inner.state.queue_add_many(pid, items, now_ms()) {
+            Ok((fx, _)) => fx,
             Err(err) => {
                 drop(inner);
                 finish(room, false);
@@ -682,16 +760,14 @@ impl Hub {
 
     // ------------------------------------------------------------ host actions over REST
 
-    pub async fn update_settings(
-        &self,
-        slug: &str,
-        token: &str,
-        name: Option<String>,
-        control_mode: Option<ControlMode>,
-        queue_mode: Option<QueueMode>,
-        // Some("") removes the PIN, Some(p) sets it.
-        pin: Option<String>,
-    ) -> Result<RoomInfo, AppError> {
+    pub async fn update_settings(&self, slug: &str, token: &str, change: SettingsChange) -> Result<RoomInfo, AppError> {
+        let SettingsChange {
+            name,
+            control_mode,
+            queue_mode,
+            permanent,
+            pin,
+        } = change;
         let session = self.authenticate(slug, token)?;
         let room = self.load(slug).await?;
         let is_host = room
@@ -714,7 +790,7 @@ impl Hub {
             let mut inner = room.inner.lock().unwrap();
             let effects = inner
                 .state
-                .update_settings(session.participant_id, name, control_mode, queue_mode, password_hash)?;
+                .update_settings(session.participant_id, name, control_mode, queue_mode, permanent, password_hash)?;
             inner.dispatch(effects);
             if pin_changed {
                 inner.pin_failures = 0;
@@ -788,6 +864,8 @@ impl Hub {
     /// Periodic maintenance: sweep presence, unload idle rooms, expire sessions,
     /// mark active rooms in the database.
     pub async fn maintenance(self: &Arc<Self>) {
+        // Save before deciding what to unload, so nothing unsaved is dropped.
+        self.flush().await;
         let now = now_ms();
         let idle_ms = self.config.limits.idle_room_ttl.as_millis() as i64;
         let rooms: Vec<Arc<LiveRoom>> = self.rooms.lock().unwrap().values().cloned().collect();
@@ -808,7 +886,8 @@ impl Hub {
                 // Re-check under the map lock: someone may have joined meanwhile.
                 let removable = map.get(slug).is_some_and(|r| {
                     let mut inner = r.inner.lock().unwrap();
-                    let empty = inner.state.is_empty();
+                    // A change since the flush above waits for the next round.
+                    let empty = inner.state.is_empty() && !inner.dirty;
                     if empty {
                         inner.unloaded = true;
                     }
@@ -826,6 +905,25 @@ impl Hub {
         }
     }
 
+    /// Saves the video and queue of every room that changed since the last save.
+    pub async fn flush(&self) {
+        let rooms: Vec<Arc<LiveRoom>> = self.rooms.lock().unwrap().values().cloned().collect();
+        for room in rooms {
+            let json = {
+                let mut inner = room.inner.lock().unwrap();
+                if !inner.dirty {
+                    continue;
+                }
+                inner.dirty = false;
+                serde_json::to_string(&inner.state.save(now_ms())).expect("room state serializes")
+            };
+            if let Err(err) = self.store.save_room_state(room.id, &json).await {
+                tracing::warn!(room = %room.slug, error = %err, "failed to save room state");
+                room.inner.lock().unwrap().dirty = true; // try again next time
+            }
+        }
+    }
+
     /// Deletes rooms nobody used within the retention window.
     pub async fn purge_inactive_rooms(&self) -> Result<u64, AppError> {
         let cutoff = now_ms() - self.config.limits.room_retention.as_millis() as i64;
@@ -835,6 +933,19 @@ impl Hub {
         }
         Ok(deleted)
     }
+}
+
+/// A host's settings change; `None` fields stay as they are.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsChange {
+    pub name: Option<String>,
+    pub control_mode: Option<ControlMode>,
+    pub queue_mode: Option<QueueMode>,
+    /// Keep the room (and its link) forever.
+    pub permanent: Option<bool>,
+    /// New 4-digit PIN; an empty string removes it.
+    pub pin: Option<String>,
 }
 
 #[derive(serde::Serialize)]
