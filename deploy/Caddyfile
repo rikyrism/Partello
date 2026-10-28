@@ -3,5 +3,8 @@
 {$DOMAIN} {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
+	# LiveKit signalling, when the optional SFU runs (profile "sfu").
+	@livekit path /rtc /rtc/*
+	reverse_proxy @livekit host.docker.internal:7880
 	reverse_proxy app:8080
 }

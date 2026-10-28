@@ -6,6 +6,9 @@
 #
 # Friends open the https://….trycloudflare.com address it prints. The address
 # changes every run, and this computer must stay on while people watch.
+#
+# Optional settings (free TURN so calls work on mobile data, LiveKit Cloud,
+# YouTube search) go in .env.tunnel; see .env.tunnel.example.
 
 set -euo pipefail
 
@@ -16,6 +19,14 @@ LOG_DIR="$ROOT/.tunnel"
 mkdir -p "$LOG_DIR"
 
 export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+
+if [ -f "$ROOT/.env.tunnel" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env.tunnel"
+  set +a
+  echo "› Settings from .env.tunnel loaded"
+fi
 
 for cmd in cloudflared cargo npm docker; do
   command -v "$cmd" >/dev/null || { echo "Missing '$cmd'. Install it first (see README)."; exit 1; }

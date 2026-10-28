@@ -5,6 +5,9 @@
 #
 # Exposes only 80/443 (Caddy, automatic HTTPS) and the TURN ports.
 # Postgres and the app are reachable only inside the Docker network.
+#
+# Optional SFU for bigger calls (LiveKit, see deploy/README.md):
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env --profile sfu up -d --build
 
 services:
   caddy:
@@ -20,6 +23,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    # LiveKit runs on the host network; Caddy reaches it through the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       app:
         condition: service_healthy
@@ -38,9 +44,21 @@ services:
       STUN_URLS: stun:${DOMAIN}:3478,stun:stun.l.google.com:19302
       TURN_URLS: turn:${DOMAIN}:3478?transport=udp,turn:${DOMAIN}:3478?transport=tcp
       TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?set TURN_SHARED_SECRET}
+      # Optional: Cloudflare Realtime TURN instead of the bundled coturn
+      # (takes priority when set).
+      CLOUDFLARE_TURN_KEY_ID: ${CLOUDFLARE_TURN_KEY_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
       ROOM_MAX_PARTICIPANTS: ${ROOM_MAX_PARTICIPANTS:-16}
-      ROOM_MAX_VOICE: ${ROOM_MAX_VOICE:-8}
+      # Empty: 8 for peer-to-peer calls, everyone in the room with an SFU.
+      ROOM_MAX_VOICE: ${ROOM_MAX_VOICE:-}
+      # SFU calls (all three set) instead of the peer-to-peer mesh.
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_URL: ${LIVEKIT_API_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     expose:
       - "8080"
     depends_on:
@@ -96,6 +114,27 @@ services:
       - --denied-peer-ip=192.168.0.0-192.168.255.255
       - --user-quota=24
       - --total-quota=1200
+
+  # Optional SFU: calls with many cameras go through this media server
+  # instead of every phone sending to every other phone. Host networking for
+  # its UDP port range; browsers reach its signalling through Caddy (/rtc).
+  livekit:
+    image: livekit/livekit-server:v1.13
+    profiles: ["sfu"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-}: ${LIVEKIT_API_SECRET:-}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50100
+          port_range_end: 50300
+          use_external_ip: true
+        room:
+          empty_timeout: 300
 
 volumes:
   pgdata:
