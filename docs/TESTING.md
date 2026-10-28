@@ -1,85 +1,108 @@
-# Panduan Testing
+# Testing Guide
 
-## Test otomatis
+English · [Bahasa Indonesia](id/TESTING.md)
+
+## Automated tests
 
 ### Backend (`server/`)
 
 ```bash
-cargo test                                   # unit + integration (store in-memory)
-TEST_DATABASE_URL=postgres://partello:partello@localhost:5433/partello cargo test --test postgres
+cargo test                                   # everything: 62 unit + 30 end-to-end (in-memory store)
+cargo test --lib                             # unit tests only (62)
+TEST_DATABASE_URL=postgres://partello:partello@localhost:5433/partello cargo test --test postgres   # 1 PostgreSQL store test
 ```
 
-| Lingkup | Lokasi | Yang diuji |
+| Scope | Location | What is tested |
 | --- | --- | --- |
-| State machine room | `src/room/state_tests.rs` | Host pertama, kapasitas, reservasi tak terlihat, creator merebut host, grace window reconnect, multi-tab, izin playback host-only, posisi tidak valid, antrean & izinnya, kapasitas antrean, laporan `ended` yang divalidasi, chat ring buffer, batas & signaling voice, transfer host |
-| Playback | `src/room/playback.rs` | Transisi play/pause/seek/load/finish, clamp posisi, versi monoton, durasi |
-| Antrean | `src/room/queue.rs` | Kapasitas, hapus, pop, pindah urutan |
-| Validasi | `src/validation.rs`, `src/youtube.rs`, `src/youtube_search.rs` | Nama, chat, karakter bidi/kontrol, bentuk URL YouTube, parsing respons Data API |
-| Protokol | `src/realtime/protocol.rs` | Event valid & payload rusak ditolak |
-| Keamanan | `src/security.rs`, `src/rate_limit.rs` | Slug, hash, rumus kredensial TURN (dicocokkan dengan `openssl`), token bucket, `X-Forwarded-For` |
-| **End-to-end** | `tests/realtime.rs` | Server nyata + 2–3 klien WebSocket: playback/antrean/chat tersinkron, peserta terlambat menerima state terkini, reconnect dalam grace, keluar setelah grace, leave langsung, promosi host, payload rusak, rate limit chat, relay signaling, auth palsu & origin asing, validasi REST & room penuh, izin pengaturan, API developer, unload room idle & purge retensi, health, search tanpa key |
-| PostgreSQL | `tests/postgres.rs` | Migrasi, room, chat terbaru, API key, cascade delete |
+| Room state machine | `src/room/state_tests.rs` | First member becomes host, capacity, invisible reservations, creator reclaims host, reconnect grace window, multiple tabs, host-only playback permission, invalid positions, queue & its permissions, queue capacity, validated `ended` reports, chat ring buffer, voice limits & signaling, host transfer, kicks, reactions limited to the allowed set, skip votes (majority skips, people who left stop counting), replies quote the original, host controls move to someone still connected after the host is away and come back when they return (a deliberate hand-over is not undone), save and restore of video + queue, playlists fill the queue up to capacity, permanent room as a host setting |
+| Playback | `src/room/playback.rs` | play/pause/seek/load/finish transitions, position clamping, monotonic versions, duration |
+| Queue | `src/room/queue.rs` | Capacity, remove, pop, reorder |
+| Validation | `src/validation.rs`, `src/youtube.rs`, `src/youtube_search.rs` | Names, chat, bidi/control characters, YouTube URL shapes, playlist links (YouTube mixes rejected), Data API response parsing for search and playlists (order kept, unplayable videos dropped), playlist import disabled without a key |
+| Protocol | `src/realtime/protocol.rs` | Valid events & malformed payloads rejected |
+| Security | `src/security.rs`, `src/rate_limit.rs` | Slugs, hashes, TURN credential formula (checked against `openssl`), token bucket, `X-Forwarded-For` |
+| ICE / TURN | `src/ice.rs` | Cloudflare TURN response parsing (STUN entries and port 53 dropped), static credentials passed through, coturn secret wins over static credentials |
+| SFU | `src/sfu.rs` | LiveKit join tokens scoped to one call (room, `roomJoin`, camera + microphone only, no admin, short expiry), HS256 signature |
+| **End-to-end** | `tests/realtime.rs` | Real server + 2–3 WebSocket clients: synced playback/queue/chat, late joiner receives current state, reconnect within grace, leaving after grace, immediate leave, host promotion, malformed payloads, chat rate limit, signaling relay, fake auth & foreign origin, REST validation & full room, settings permission, developer API, idle room unload & retention purge, health, search without a key, PIN rooms, kicks, reactions and skip votes reach everyone, chat replies carry the quote, video and queue survive a restart (two server instances sharing one memory store), playlist import without a key, SFU tokens only for call members, CSP lists the SFU origin, permanent rooms |
+| PostgreSQL | `tests/postgres.rs` | Migrations, rooms, recent chat with replies, saved room state, API keys, cascade delete, permanent rooms survive the retention purge |
 
 ### Frontend (`web/`)
 
 ```bash
-npm test          # Vitest + Testing Library (jsdom)
+npm test          # Vitest + Testing Library (jsdom), 55 tests
 npm run lint
 npm run typecheck
 ```
 
-| File | Yang diuji |
+| File | What is tested |
 | --- | --- |
-| `syncMath.test.ts` | Posisi seharusnya, deteksi lompatan vs buffering, keputusan koreksi drift, seek pengguna tanpa izin dikembalikan |
-| `store.test.ts` | Snapshot, pesan sistem masuk/keluar/call/kamera, update playback usang diabaikan, rekonsiliasi chat optimistis |
-| `parsing.test.ts` | Parser link YouTube, kode room, estimasi jam server, format waktu |
-| `components.test.tsx` | Chat (Enter kirim, Shift+Enter baris baru, empty/reconnecting state), antrean (validasi link, pencarian YouTube via server, mode host-only), join gate (validasi nama, room penuh) |
-| `i18n.test.ts` | Setiap `t()`/`translate()`/`msg()` di kode punya terjemahan Indonesia, nama genre & catatan sistem chat lengkap, placeholder `{…}` konsisten, fallback ke Inggris |
+| `syncMath.test.ts` | Expected position, jump vs buffering detection, drift correction decisions, unauthorized user seeks reverted |
+| `store.test.ts` | Snapshot, join/leave/call/camera system messages, stale playback updates ignored, optimistic chat reconciliation |
+| `parsing.test.ts` | YouTube link parser, room code, server clock estimate, time formatting |
+| `features.test.ts` | @mentions (case-insensitive, word boundary, longest name first, name being typed), playlist link detection (mixes excluded), skip votes (majority of people present, votes for the current video, reset when the video changes) |
+| `invite.test.ts` | Invite message in English and Indonesian, with the PIN or who to ask for it |
+| `components.test.tsx` | Chat (Enter sends, Shift+Enter newline, empty/reconnecting state), queue (link validation, YouTube search through the server, host-only mode), join gate (name validation, PIN, full room) |
+| `i18n.test.ts` | Every `t()`/`translate()`/`msg()` in the code has an Indonesian translation, genre names & chat system notes complete, `{…}` placeholders consistent, fallback to English |
 
-## Uji manual: dua browser, playback tersinkron
+## Manual test: two browsers, synced playback
 
-Sudah dijalankan pada pengembangan ini di Chrome dengan dua tab (host & tamu).
+Run during development in Chrome with two tabs (host & guest).
 
-1. Jalankan server (`cargo run`) dan buka `http://localhost:8080`.
-2. **Browser A**: tulis nama di tiket → *Create a room*. Room terbuka dengan status *Live*.
-3. Klik *Invite* → link tersalin.
-4. **Browser B** (jendela incognito atau browser lain, agar localStorage terpisah): buka link → isi nama → *Join the room*.
-   - A melihat "B joined" di chat dan jumlah *People* naik.
-   - B melihat label "Host controls playback".
-5. A: tab *Queue* → tempel `https://www.youtube.com/watch?v=aqz-KE-bpKQ` → *Add*. Video diputar di kedua browser.
-6. A: tombol pause di bawah player → kedua browser berhenti di detik yang sama.
-7. B: klik video untuk play → ditolak, video kembali ke posisi room, dan muncul toast "Only the host can control playback".
-8. A: geser slider seek ke tengah → B melompat ke posisi yang sama (selisih ≤ 1 detik).
-9. B: kirim chat → muncul di A secara real-time.
-10. B: reload halaman → kembali sebagai peserta yang sama, video lanjut di posisi room.
-11. Matikan Wi-Fi B selama 5 detik lalu nyalakan → indikator "Reconnecting", lalu tersambung kembali tanpa pesan "left".
+1. Start the server (`cargo run`) and open `http://localhost:8080`.
+2. **Browser A**: write a name on the ticket → *Create a room*. The room opens with status *Live*.
+3. Click *Invite* → the link is copied.
+4. **Browser B** (an incognito window or another browser, so localStorage is separate): open the link → enter a name → *Join the room*.
+   - A sees "B joined" in chat and the *People* count goes up.
+   - B sees the label "Host controls playback".
+5. A: *Queue* tab → paste `https://www.youtube.com/watch?v=aqz-KE-bpKQ` → *Add*. The video plays in both browsers.
+6. A: pause button under the player → both browsers stop at the same second.
+7. B: click the video to play → refused, the video returns to the room position, and a toast shows "Only the host can control playback".
+8. A: drag the seek slider to the middle → B jumps to the same position (≤ 1 second apart).
+9. B: send a chat message → it appears in A in real time.
+10. B: reload the page → back as the same participant, video continues at the room position.
+11. Turn B's Wi-Fi off for 5 seconds and back on → "Reconnecting" indicator, then reconnected without a "left" message.
 
-## Uji manual WebRTC (memerlukan browser & jaringan nyata)
+## Manual test: room features
 
-Otomatisasi di repo menguji signaling, bukan media. Skenario berikut perlu dijalankan dengan perangkat nyata:
+Use two or three devices (or browsers with separate localStorage) in the same room.
 
-| # | Skenario | Yang diharapkan |
+| # | Scenario | Expected |
 | --- | --- | --- |
-| 1 | Dua laptop di Wi-Fi yang sama, *Join call* | Izin mikrofon diminta saat itu juga (bukan saat masuk room); suara terdengar dua arah; ring bicara menyala |
-| 2 | Mute/unmute | Ikon mic merah di tile dan daftar People; pesan sistem "muted the microphone" |
-| 3 | Kamera on/off saat call berjalan | Video muncul/hilang tanpa reconnect; avatar saat kamera mati |
-| 4 | Tolak izin mikrofon | Toast menjelaskan cara mengizinkan; tetap bisa menonton dan chat |
-| 5 | Kamera dipakai aplikasi lain (Zoom) | Toast "being used by another app"; call audio tetap jalan |
-| 6 | Laptop ↔ ponsel via data seluler | Tanpa TURN bisa gagal tersambung (ikon loading pada tile). Dengan `TURN_URLS` + `TURN_SHARED_SECRET` harus tersambung |
-| 7 | 4–8 peserta dengan kamera | Kualitas menurun bertahap (bitrate dibatasi); peserta ke-9 ditolak "call is full" |
-| 8 | Keluar call / tutup tab | Lampu kamera/mic perangkat padam; peer lain melihat peserta keluar dari call |
-| 9 | Headset vs speaker laptop | Tidak ada echo (echo cancellation aktif) |
-| 10 | Volume per peserta (People → ikon volume) | Hanya suara orang tersebut yang berubah |
-| 11 | Speaker laptop (tanpa headset) saat video diputar | Teman mendengar suara Anda jelas; suara video tertekan (voice isolation) dan video mengecil saat ada yang bicara (auto-ducking) |
-| 12 | Push-to-talk (ikon tangan) | Teman hanya mendengar Anda selama tombol "Tahan untuk bicara" atau Spasi ditahan; mengetik di chat tidak memicu Spasi |
+| 1 | Reactions from two devices | Each reaction appears on both screens at about the same time |
+| 2 | Vote to skip with 3 people (host + 2 guests) | One vote is not enough; when a majority votes, the video skips for everyone and the chat notes that the room voted to skip it. Votes reset on the next video |
+| 3 | Reply + @mention with the other tab in the background | The reply shows the quoted message; the mentioned or replied-to person hears the two-note mention sound even though their tab is not in front (chat sounds on, and they clicked the page at least once since loading it, because browsers block sound before that) |
+| 4 | Restart the server mid-video (`Ctrl+C`, then start it again within 2 minutes) | Everyone reconnects on their own; the same video keeps playing at about the right spot and the queue is intact. After more than 2 minutes it waits paused at the same spot |
+| 5 | Host closes the tab | After about 10 seconds someone still in the room gets the playback controls; when the host comes back, the controls return to them |
+| 6 | Paste a YouTube playlist link (with `YOUTUBE_API_KEY` set) | Offer to add the whole playlist; the videos are added to the queue up to its limit. A mix (`list=RD…`) is refused with an explanation |
+| 7 | Host ticks "Keep this room forever" | The setting stays after reload; the room is not purged by `ROOM_RETENTION_DAYS` |
 
-Untuk uji di jaringan berbeda tanpa deploy, jalankan Partello di balik tunnel HTTPS (mis. `cloudflared tunnel --url http://localhost:8080`) dan tambahkan origin tunnel ke `ALLOWED_ORIGINS`.
+## Manual WebRTC test (needs real browsers & networks)
 
-## Gate desain (Taste Skill)
+The automation in the repo tests signaling, not media. These scenarios need real devices:
+
+| # | Scenario | Expected |
+| --- | --- | --- |
+| 1 | Two laptops on the same Wi-Fi, *Join call* | Microphone permission is asked at that moment (not when entering the room); audio both ways; speaking ring lights up |
+| 2 | Mute/unmute | Red mic icon on the tile and in the People list; system message "muted the microphone" |
+| 3 | Camera on/off during a call | Video appears/disappears without reconnecting; avatar when the camera is off |
+| 4 | Deny microphone permission | Toast explains how to allow it; watching and chat still work |
+| 5 | Camera in use by another app (Zoom) | Toast "being used by another app"; audio call keeps working |
+| 6 | Laptop ↔ phone over mobile data | Without TURN it may fail to connect (loading icon on the tile). With `TURN_URLS` + `TURN_SHARED_SECRET` it must connect |
+| 7 | Call from mobile data with Cloudflare TURN (`CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN`, no coturn) | Startup log shows `turn=cloudflare`; the phone on mobile data connects with sound and camera both ways |
+| 8 | 4–8 participants with cameras (mesh, no SFU) | Quality degrades gradually (bitrate capped); the 9th participant is refused with "call is full" |
+| 9 | SFU call (`LIVEKIT_*` set) with 3+ cameras, at least one on mobile data | Startup log shows `calls=sfu`; everyone sees every camera; more than 8 people can join the call |
+| 10 | Leave the call / close the tab | The device's camera/mic light goes off; other peers see the participant leave the call |
+| 11 | Headset vs laptop speakers | No echo (echo cancellation on) |
+| 12 | Per-participant volume (People → volume icon) | Only that person's voice changes |
+| 13 | Laptop speakers (no headset) while a video plays | Friends hear you clearly; the video sound is suppressed (voice isolation) and the video gets quieter while someone speaks (auto-ducking) |
+| 14 | Push-to-talk (hand icon) | Friends only hear you while the "Hold to talk" button or Space is held; typing in chat does not trigger Space |
+
+To test across different networks without deploying, run `./scripts/tunnel.sh` (a Cloudflare quick tunnel; put TURN or LiveKit Cloud settings in `.env.tunnel`, see [DEPLOYMENT.md](DEPLOYMENT.md#6-sharing-from-your-own-computer-tunnel)). Or run Partello behind any HTTPS tunnel (e.g. `cloudflared tunnel --url http://localhost:8080`) and add the tunnel origin to `ALLOWED_ORIGINS`.
+
+## Design gate (Taste Skill)
 
 ```bash
 node <taste-skill>/scripts/lint.mjs web/src/pages web/src/index.css
 node <taste-skill>/scripts/inspect.mjs http://localhost:8080/
 ```
 
-Hasil terakhir: lint 0 FAIL, inspect 0 FAIL. WARN yang tersisa dijelaskan di README.
+Last result: lint 0 FAIL, inspect 0 FAIL. The remaining WARNs are explained in the README.
