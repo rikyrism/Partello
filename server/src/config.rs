@@ -195,7 +195,7 @@ impl Config {
             vapid_private_key: non_empty("VAPID_PRIVATE_KEY"),
             vapid_subject: non_empty("VAPID_SUBJECT").unwrap_or_else(|| default_vapid_subject(&public_base_url)),
             trending_region: trending_region(non_empty("TRENDING_REGION"))?,
-            trending_schedule: trending_schedule(parse_or("TRENDING_REFRESH_HOUR", 7)?, parse_or("TRENDING_UTC_OFFSET", 7)?)?,
+            trending_schedule: trending_schedule(parse_or("TRENDING_REFRESH_HOUR", 15)?, parse_or("TRENDING_UTC_OFFSET", 7)?)?,
         })
     }
 
@@ -231,7 +231,7 @@ impl Config {
             vapid_subject: "mailto:push@example.org".into(),
             trending_region: "US".into(),
             trending_schedule: crate::trending::Schedule {
-                hour: 7,
+                hour: 15,
                 utc_offset_hours: 7,
             },
         }

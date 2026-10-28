@@ -1,11 +1,15 @@
 //! What is trending on YouTube today, for the landing page's "Pick a genre".
 //!
 //! Fetched from the official Data API (`chart=mostPopular`) once a day per
-//! server at a fixed hour (07:00 WIB by default), never per visitor: about 8
+//! server at a fixed hour, never per visitor: about 8
 //! quota units a day. The result is kept in `server_settings`, so a restart
 //! serves the stored list and waits for the next scheduled hour instead of
 //! asking YouTube again. A list that missed its hour (the server was down) is
 //! refreshed right away.
+//!
+//! The default hour, 15:00 WIB, is just after the YouTube quota resets
+//! (midnight Pacific: 14:00 WIB in US summer time, 15:00 WIB otherwise), so
+//! the refresh still works on a day the quota ran out.
 
 use std::{
     sync::{Arc, RwLock},
