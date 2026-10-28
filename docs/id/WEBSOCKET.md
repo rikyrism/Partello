@@ -45,6 +45,7 @@ Setiap frame adalah objek JSON dengan field `type`. Tipe Rust ada di `server/src
 | `queue_move` | `item_id`, `to_index` | Pengontrol playback |
 | `queue_skip` | – | Pengontrol playback |
 | `skip_vote` | `item_id`, `vote` (bool) | Siapa pun; `vote: false` menarik vote. Diabaikan jika `item_id` bukan lagi video yang sedang diputar. Video dilewati pada `floor(n/2)+1` vote dari `n` peserta yang tersambung |
+| `start_countdown` | – | Pengontrol playback, saat video sedang diputar atau di-pause (selain itu `conflict`). Mem-pause di posisi saat ini, lalu `countdown`; video diputar untuk semua orang 3 detik kemudian. Lihat `countdown` di bawah |
 | `react` | `emoji` | Hanya salah satu dari 😂 🔥 😱 ❤️ 👏 😭 🤯 👀; selain itu `validation_failed` |
 | `voice_join` | `muted`, `camera` | Maks. `limits.max_voice_participants` orang dalam call; jika penuh: "The call is full (N people)" |
 | `voice_update` | `muted`, `camera` | Harus sudah di call |
@@ -54,7 +55,9 @@ Setiap frame adalah objek JSON dengan field `type`. Tipe Rust ada di `server/src
 | `kick` | `participant_id` | Hanya host; peserta dikeluarkan, sesinya dicabut, tab-nya ditutup dengan `4003` |
 | `leave` | – | Keluar segera; sesi dicabut |
 
-Rate limit per koneksi (token bucket): umum 30/detik, playback 4/detik (`playback_control`, `queue_play`, `queue_skip`, `skip_vote`), antrean 0,5/detik dengan burst 5 (`queue_add`, `queue_add_playlist`, `queue_remove`, `queue_move`), reaksi 3/detik dengan burst 10, signaling 60/detik (burst 300, terpisah dari anggaran umum). Satu sesi maksimal 3 koneksi. Pelanggaran dibalas `error` dengan `code: "rate_limited"`.
+Rate limit per koneksi (token bucket): umum 30/detik, playback 4/detik (`playback_control`, `queue_play`, `queue_skip`, `skip_vote`, `start_countdown`), antrean 0,5/detik dengan burst 5 (`queue_add`, `queue_add_playlist`, `queue_remove`, `queue_move`), reaksi 3/detik dengan burst 10, signaling 60/detik (burst 300, terpisah dari anggaran umum). Satu sesi maksimal 3 koneksi. Pelanggaran dibalas `error` dengan `code: "rate_limited"`.
+
+Timestamp di chat dan tombol 📌 tidak butuh apa pun dari protokol: "📌 12:45" adalah `chat_send` biasa, dan mengklik waktu di chat mengirim seek `playback_control` biasa (ditolak seperti biasa untuk orang yang tidak boleh mengontrol playback).
 
 Peserta yang kehilangan semua koneksinya otomatis dikeluarkan dari call (kursi call dibebaskan). Setelah tersambung lagi, klien mengirim `voice_join` ulang.
 
@@ -70,6 +73,7 @@ Peserta yang kehilangan semua koneksinya otomatis dikeluarkan dari call (kursi c
 | `queue_updated` | `queue`, `actor_id`, `nonce?` | Setiap perubahan antrean; `nonce` dan `actor_id` seperti di atas |
 | `chat_message_created` | `message` (`nonce` milik pengirim disertakan) | Pesan baru |
 | `reaction` | `participant_id`, `emoji` | Seseorang mengirim reaksi (ke semua orang, termasuk pengirimnya) |
+| `countdown` | `start_at` (ms server), `version`, `actor_id` | Tepat setelah `playback_changed` (pause) yang disebabkan `start_countdown`. Tampilkan 3-2-1 sampai `start_at`. Pada `start_at` server mengirim `playback_changed` (diputar, posisi sama, `actor_id: null`), kecuali playback berubah lebih dulu: `playback_changed` apa pun dengan `version` di atas versi ini membatalkan hitung mundur, dan setelah itu tidak ada lagi yang dikirim untuknya |
 | `skip_votes` | `item_id`, `voters` (uuid[]), `skipped` | Vote skip ditambahkan atau ditarik. Jika `skipped: true`, video sudah dilewati dan disusul `queue_updated`/`playback_changed` dengan `actor_id: null` |
 | `voice_signal` | `from`, `data` | Signaling WebRTC untuk penerima saja (mode mesh) |
 | `call_token` | `url`, `token` | Hanya mode SFU: dikirim hanya ke peserta yang `voice_join`-nya diterima. Sambungkan ke LiveKit di `url` dengan `token` |
@@ -129,4 +133,8 @@ Posisi saat ini dihitung klien: `position + (status == "playing" ? (server_now -
 ← {"type":"reaction","participant_id":"…","emoji":"🔥"}
 → {"type":"skip_vote","item_id":"…","vote":true}
 ← {"type":"skip_votes","item_id":"…","voters":["…"],"skipped":false}
+→ {"type":"start_countdown"}
+← {"type":"playback_changed","playback":{"status":"paused","position":40.2,"version":3,…},"actor_id":"…"}
+← {"type":"countdown","start_at":1793113550445,"version":3,"actor_id":"…"}
+← {"type":"playback_changed","playback":{"status":"playing","position":40.2,"version":4,…},"actor_id":null}
 ```

@@ -27,7 +27,7 @@ Perkiraan bandwidth TURN: dalam call 4 orang dengan kamera, satu orang yang haru
 ## Yang perlu disiapkan
 
 1. VPS dengan Ubuntu 22.04/24.04 dan akses SSH.
-2. **Domain** (atau subdomain), misalnya `nonton.domainanda.com`. HTTPS wajib: tanpa HTTPS, browser menolak akses mikrofon/kamera.
+2. **Domain** (atau subdomain), misalnya `nonton.domainanda.com`. HTTPS wajib: tanpa HTTPS, browser menolak akses mikrofon/kamera, pemasangan aplikasi, dan notifikasi push.
 3. (Opsional) API key YouTube Data API v3 untuk fitur pencarian dan impor playlist.
 
 ## Langkah
@@ -138,7 +138,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --
 
 Restart memutus koneksi sebentar; semua orang tersambung ulang dan bergabung kembali otomatis dalam beberapa detik. Video yang sedang diputar dan antrean setiap room tersimpan di database, jadi tidak ada yang hilang: video yang sedang diputar akan lanjut jika aplikasi kembali dalam 2 menit, jika lebih lama video menunggu dalam keadaan pause di posisi yang sama.
 
-**Backup database** (room, chat, antrean tersimpan, API key), misalnya harian lewat cron:
+**Backup database** (room, chat, antrean tersimpan, API key, subscription notifikasi beserta key yang mengikatnya), misalnya harian lewat cron:
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env exec -T postgres \
@@ -156,6 +156,8 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env logs -f 
 - **Gunakan link `https://` dari tombol Undang.** Link `localhost` hanya bisa dibuka di komputer Anda sendiri.
 - **TURN wajib di Indonesia.** Banyak operator seluler memakai CGNAT; tanpa TURN, sebagian teman bisa menonton dan chat tetapi **tidak tersambung voice/video**. Paket ini sudah menyertakan coturn. TURN terkelola (Cloudflare Realtime TURN, Metered.ca) untuk setup tanpa coturn sendiri, misalnya tunnel; lihat [`docs/id/DEPLOYMENT.md`](../docs/id/DEPLOYMENT.md#4-turn).
 - **iPhone/Android:** browser kadang menahan suara video sampai layar disentuh sekali; Partello menampilkan tombol "Nyalakan suara".
+- **Pasang seperti aplikasi.** Di Android dan Chrome/Edge desktop, landing page menampilkan "Pasang aplikasi"; di iPhone/iPad pakai Bagikan → Tambah ke Layar Utama. Mode bioskop (tombol layar penuh di bawah video) tetap menampilkan chat, reaksi, dan call di atas video, cocok untuk ponsel.
+- **Notifikasi "ada yang mulai nonton".** Lonceng di header room memberi tahu perangkat itu saat ada yang mulai nonton di room, bahkan saat Partello tertutup. Tidak ada yang perlu diatur: server membuat key notifikasinya saat pertama kali menyala dan menyimpannya di database (jadi pulihkan dari backup alih-alih mulai dari database kosong, atau semua orang harus menekan lonceng lagi). Di iPhone/iPad hanya bisa dari aplikasi yang ditambahkan ke Layar Utama (iOS 16.4 atau lebih baru). Tidak ada notifikasi dalam 2 menit pertama setelah restart, dan paling banyak satu per room setiap 10 menit.
 - **Memakai Cloudflare (proxy oranye) di depan VPS?** Tambahkan `CLIENT_IP_HEADER: CF-Connecting-IP` di service `app`, dan aktifkan dukungan WebSocket di Cloudflare. Tanpa header itu, semua pengguna terlihat sebagai IP Cloudflare dan bisa saling terkena rate limit. Catatan: TURN dan port media SFU tidak bisa lewat proxy Cloudflare, jadi buat record DNS terpisah (misalnya `turn.domainanda.com`, proxy abu-abu) dan pakai itu di `TURN_URLS`.
 - **Satu jaringan rumah/kafe** berbagi satu IP. Batas percobaan PIN (10 per 5 menit per IP) cukup longgar untuk satu keluarga, tetapi jangan bagikan PIN yang salah.
 - **Room yang ingin disimpan:** centang "Simpan room ini selamanya" di pengaturan room. Room lain dihapus setelah tidak aktif selama `ROOM_RETENTION_DAYS` (default 30 hari).

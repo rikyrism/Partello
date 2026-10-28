@@ -33,6 +33,20 @@ API ini memungkinkan produk lain (situs, bot Discord/Telegram, aplikasi) membuka
 
 Perubahan berikutnya dilakukan oleh host room di aplikasi (dialog pengaturan, "Keep this room forever"), yang memanggil `PATCH /api/rooms/{slug}/settings` dengan session token host. Body-nya menerima `name`, `control_mode`, `queue_mode`, `permanent`, dan `pin` (string kosong menghapus PIN), masing-masing opsional; balasannya RoomInfo yang sudah diperbarui, dan semua orang di room menerima `room_settings_changed`.
 
+## Notifikasi push (aplikasi web)
+
+Tombol lonceng "beri tahu saya" di aplikasi memakai tiga endpoint di luar `/api/v1`. Endpoint ini tidak memakai API key: dua endpoint room memakai session token peserta (`Authorization: Bearer pts_…`, dari `POST /api/rooms/{slug}/join`). Cara notifikasi dikirim dijelaskan di [ARCHITECTURE.md](ARCHITECTURE.md#notifikasi-push).
+
+| Method | Path | Fungsi |
+| --- | --- | --- |
+| `GET` | `/api/push/key` | `{"public_key": "…"}`: public key VAPID server (base64url) untuk `PushManager.subscribe({ applicationServerKey })` |
+| `POST` | `/api/rooms/{slug}/push` | Body `{"subscription": <PushSubscription.toJSON()>, "lang": "id"}` (`lang`: `en` atau `id`). Beri tahu browser ini saat ada yang mulai nonton di room; dijawab 204. Subscribe lagi memperbarui key dan bahasanya |
+| `DELETE` | `/api/rooms/{slug}/push` | Body `{"endpoint": "…"}`. Hentikan notifikasi untuk room ini; dijawab 204 |
+
+- Hanya endpoint `https` di layanan push browser (Google FCM, Mozilla, Apple, Windows) yang diterima; selain itu `validation_failed` (422).
+- Paling banyak satu notifikasi per room setiap 10 menit, ditulis dalam `lang` (selain `id` berarti bahasa Inggris). Satu room menyimpan maksimal 200 subscription; lebih dari itu, yang paling lama dibuang.
+- `POST` dihitung dalam batas per IP yang sama dengan bergabung ke room. Jika push tidak aktif di server, `GET /api/push/key` dan `POST` menjawab `unavailable` (503).
+
 ## Contoh
 
 ```bash

@@ -29,6 +29,8 @@ Image akhir berbasis `debian:bookworm-slim`, berjalan sebagai user non-root, dan
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_API_URL` | lihat bawah | Opsional, call lewat SFU |
 | `YOUTUBE_API_KEY` | – | Opsional, untuk pencarian YouTube dan impor playlist. Simpan sebagai secret |
 | `ROOM_RETENTION_DAYS` | `30` | Room yang tidak disentuh selama ini dihapus, kecuali room permanen |
+| `VAPID_PRIVATE_KEY` | – | Opsional. Mematok key notifikasi push (private key P-256, base64url). Kosong: dibuat saat pertama kali menyala dan disimpan di database. Simpan sebagai secret |
+| `VAPID_SUBJECT` | `mailto:ops@partello.app` | Kontak opsional untuk layanan push browser. Kosong: `PUBLIC_BASE_URL` jika diawali `https://`, selain itu `mailto:push@example.org` |
 
 Semua secret disuntikkan sebagai environment variable atau secret manager, **bukan** dimasukkan ke image atau repository.
 
@@ -36,11 +38,14 @@ Semua secret disuntikkan sebagai environment variable atau secret manager, **buk
 
 **Room permanen.** Host bisa mencentang "Simpan room ini selamanya" di pengaturan room. Room seperti ini tidak pernah dihapus oleh `ROOM_RETENTION_DAYS`, jadi link-nya tetap berlaku. Room lain (beserta chat-nya) dihapus setelah tidak aktif selama jumlah hari tersebut.
 
+**Notifikasi push.** Tidak ada yang perlu diatur. Saat pertama kali menyala, server membuat pasangan key VAPID dan menyimpannya di tabel `server_settings`, sehingga key itu bertahan setelah restart dan ikut ter-backup bersama database. Setiap subscription browser terikat pada key itu: jika hilang atau diganti (database baru, `VAPID_PRIVATE_KEY` yang berbeda), subscription yang ada berhenti bekerja dan orang harus menekan lonceng lagi. Isi `VAPID_PRIVATE_KEY` hanya untuk memakai key yang sama di database yang berbeda. Push butuh HTTPS (lihat di bawah); log startup memberi peringatan `push notifications disabled` jika key gagal dimuat. Server hanya pernah mengirim ke layanan push browser besar (Google, Mozilla, Apple, Microsoft), jadi HTTPS keluar ke sana harus diizinkan.
+
 ## 3. HTTPS dan WebSocket
 
 Letakkan reverse proxy (Caddy, nginx, Traefik, atau load balancer cloud) di depan port 8080:
 
 - TLS wajib: WebRTC (`getUserMedia`) hanya bekerja di origin aman, dan WebSocket harus `wss://`.
+- Service worker (aplikasi yang bisa dipasang, halaman offline, notifikasi push) juga butuh origin aman. `http://localhost` dianggap aman untuk pengembangan; alamat HTTP biasa lainnya tidak.
 - Teruskan upgrade WebSocket untuk `/api/rooms/*/ws` dengan timeout idle ≥ 75 detik (server mengirim ping setiap 20 detik).
 
 Contoh Caddy:
@@ -160,6 +165,8 @@ Pengaturan opsional ditaruh di `.env.tunnel` (salin dari [`.env.tunnel.example`]
 - `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`: LiveKit Cloud untuk call yang lebih besar.
 - `YOUTUBE_API_KEY`: pencarian YouTube dan impor playlist.
 
+Tunnel memakai HTTPS, jadi memasang aplikasi dan notifikasi push bisa dipakai lewat tunnel. Karena alamatnya berganti setiap kali dijalankan, aplikasi yang terpasang atau subscription notifikasi dari sesi sebelumnya menunjuk ke alamat yang sudah tidak ada; pasang dan subscribe lagi di alamat yang baru.
+
 ## 7. Health check
 
 - `GET /healthz`: proses hidup (liveness).
@@ -172,12 +179,13 @@ Versi ini dirancang untuk **satu instance** (sesi room ada di memori). Jangan ja
 1. Gunakan sticky routing berdasarkan path `/r/{slug}` dan `/api/rooms/{slug}/…` agar satu room selalu berada di instance yang sama, atau
 2. Ikuti jalur migrasi di [ARCHITECTURE.md](ARCHITECTURE.md#skala-dan-state-terdistribusi) (state & fan-out di Redis).
 
-Video yang sedang diputar dan antrean setiap room disimpan di PostgreSQL (`rooms.saved_state`): setiap 5 detik jika ada perubahan, sebelum room idle dilepas dari memori, dan saat shutdown yang rapi (graceful). Restart (deploy) tetap memutus semua koneksi karena sesi ada di memori, sehingga semua orang tersambung ulang; ini butuh beberapa detik. Klien tersambung ulang dan bergabung otomatis. Video yang sedang diputar akan lanjut jika server kembali dalam 2 menit; jika lebih lama, video menunggu dalam keadaan pause di posisi yang sama.
+Video yang sedang diputar dan antrean setiap room disimpan di PostgreSQL (`rooms.saved_state`): setiap 5 detik jika ada perubahan, sebelum room idle dilepas dari memori, dan saat shutdown yang rapi (graceful). Restart (deploy) tetap memutus semua koneksi karena sesi ada di memori, sehingga semua orang tersambung ulang; ini butuh beberapa detik. Notifikasi "ada yang mulai nonton" tidak dikirim dalam 2 menit pertama setelah server menyala, sehingga reconnect massal ini tidak membangunkan ponsel semua orang. Klien tersambung ulang dan bergabung otomatis. Video yang sedang diputar akan lanjut jika server kembali dalam 2 menit; jika lebih lama, video menunggu dalam keadaan pause di posisi yang sama.
 
 ## 9. Checklist sebelum go-live
 
 - [ ] HTTPS + `wss://` aktif, `ALLOWED_ORIGINS` tepat
 - [ ] TURN berjalan dan diuji dari jaringan seluler
+- [ ] Notifikasi push diuji: lonceng di satu perangkat, mulai nonton dari perangkat lain setelah 2 menit pertama server menyala
 - [ ] Jika memakai SFU, call dengan 3+ kamera sudah diuji dari data seluler
 - [ ] Backup PostgreSQL terjadwal
 - [ ] Log JSON dikirim ke sistem observability; alert untuk `/readyz`

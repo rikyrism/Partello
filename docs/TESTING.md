@@ -7,14 +7,16 @@ English · [Bahasa Indonesia](id/TESTING.md)
 ### Backend (`server/`)
 
 ```bash
-cargo test                                   # everything: 62 unit + 30 end-to-end (in-memory store)
-cargo test --lib                             # unit tests only (62)
+cargo test                                   # everything: 70 unit + 32 end-to-end (in-memory store)
+cargo test --lib                             # unit tests only (70)
 TEST_DATABASE_URL=postgres://partello:partello@localhost:5433/partello cargo test --test postgres   # 1 PostgreSQL store test
+cargo test --lib push::tests::vector -- --ignored --nocapture   # ignored helper: prints a Web Push test vector
+cargo test --lib push::live -- --ignored --nocapture            # ignored helper: live request to Google FCM (needs internet)
 ```
 
 | Scope | Location | What is tested |
 | --- | --- | --- |
-| Room state machine | `src/room/state_tests.rs` | First member becomes host, capacity, invisible reservations, creator reclaims host, reconnect grace window, multiple tabs, host-only playback permission, invalid positions, queue & its permissions, queue capacity, validated `ended` reports, chat ring buffer, voice limits & signaling, host transfer, kicks, reactions limited to the allowed set, skip votes (majority skips, people who left stop counting), replies quote the original, host controls move to someone still connected after the host is away and come back when they return (a deliberate hand-over is not undone), save and restore of video + queue, playlists fill the queue up to capacity, permanent room as a host setting |
+| Room state machine | `src/room/state_tests.rs` | First member becomes host, capacity, invisible reservations, creator reclaims host, reconnect grace window, multiple tabs, host-only playback permission, invalid positions, queue & its permissions, queue capacity, validated `ended` reports, chat ring buffer, voice limits & signaling, host transfer, kicks, reactions limited to the allowed set, skip votes (majority skips, people who left stop counting), replies quote the original, host controls move to someone still connected after the host is away and come back when they return (a deliberate hand-over is not undone), save and restore of video + queue, playlists fill the queue up to capacity, permanent room as a host setting, the countdown pauses then plays from the same spot, a change during the countdown cancels it |
 | Playback | `src/room/playback.rs` | play/pause/seek/load/finish transitions, position clamping, monotonic versions, duration |
 | Queue | `src/room/queue.rs` | Capacity, remove, pop, reorder |
 | Validation | `src/validation.rs`, `src/youtube.rs`, `src/youtube_search.rs` | Names, chat, bidi/control characters, YouTube URL shapes, playlist links (YouTube mixes rejected), Data API response parsing for search and playlists (order kept, unplayable videos dropped), playlist import disabled without a key |
@@ -22,13 +24,14 @@ TEST_DATABASE_URL=postgres://partello:partello@localhost:5433/partello cargo tes
 | Security | `src/security.rs`, `src/rate_limit.rs` | Slugs, hashes, TURN credential formula (checked against `openssl`), token bucket, `X-Forwarded-For` |
 | ICE / TURN | `src/ice.rs` | Cloudflare TURN response parsing (STUN entries and port 53 dropped), static credentials passed through, coturn secret wins over static credentials |
 | SFU | `src/sfu.rs` | LiveKit join tokens scoped to one call (room, `roomJoin`, camera + microphone only, no admin, short expiry), HS256 signature |
-| **End-to-end** | `tests/realtime.rs` | Real server + 2–3 WebSocket clients: synced playback/queue/chat, late joiner receives current state, reconnect within grace, leaving after grace, immediate leave, host promotion, malformed payloads, chat rate limit, signaling relay, fake auth & foreign origin, REST validation & full room, settings permission, developer API, idle room unload & retention purge, health, search without a key, PIN rooms, kicks, reactions and skip votes reach everyone, chat replies carry the quote, video and queue survive a restart (two server instances sharing one memory store), playlist import without a key, SFU tokens only for call members, CSP lists the SFU origin, permanent rooms |
-| PostgreSQL | `tests/postgres.rs` | Migrations, rooms, recent chat with replies, saved room state, API keys, cascade delete, permanent rooms survive the retention purge |
+| Web Push | `src/push.rs`, `src/realtime/hub.rs` | Payloads decrypt with an independent RFC 8291 receiver written from the spec, fresh salt and sender key per message, subscriptions limited to browser push services (http, look-alike hosts, IP addresses, other ports and bad keys refused), VAPID JWT signed for the push service origin and verifiable with the public key, the stored key restores the same identity, `Topic` is URL-safe and short, notification text in the subscriber's language |
+| **End-to-end** | `tests/realtime.rs` | Real server + 2–3 WebSocket clients: synced playback/queue/chat, late joiner receives current state, reconnect within grace, leaving after grace, immediate leave, host promotion, malformed payloads, chat rate limit, signaling relay, fake auth & foreign origin, REST validation & full room, settings permission, developer API, idle room unload & retention purge, health, search without a key, PIN rooms, kicks, reactions and skip votes reach everyone, chat replies carry the quote, video and queue survive a restart (two server instances sharing one memory store), playlist import without a key, SFU tokens only for call members, CSP lists the SFU origin, permanent rooms, the countdown (guests refused in a host-only room, pause → `countdown` → play for everyone), push subscriptions (key endpoint 503 until push is set up, session required, only browser push services, unsubscribe) |
+| PostgreSQL | `tests/postgres.rs` | Migrations, rooms, recent chat with replies, saved room state, API keys, cascade delete, permanent rooms survive the retention purge, server settings keep the first value written, push subscriptions (subscribing again updates in place, removal) |
 
 ### Frontend (`web/`)
 
 ```bash
-npm test          # Vitest + Testing Library (jsdom), 55 tests
+npm test          # Vitest + Testing Library (jsdom), 59 tests
 npm run lint
 npm run typecheck
 ```
@@ -41,7 +44,15 @@ npm run typecheck
 | `features.test.ts` | @mentions (case-insensitive, word boundary, longest name first, name being typed), playlist link detection (mixes excluded), skip votes (majority of people present, votes for the current video, reset when the video changes) |
 | `invite.test.ts` | Invite message in English and Indonesian, with the PIN or who to ask for it |
 | `components.test.tsx` | Chat (Enter sends, Shift+Enter newline, empty/reconnecting state), queue (link validation, YouTube search through the server, host-only mode), join gate (name validation, PIN, full room) |
+| `timestamps.test.ts` | Chat timestamps (`m:ss` and `h:mm:ss` found, other numbers, times and versions left alone), countdown in the store (starts on the paused version, ends with the next playback change, ignored when playback already moved on) |
 | `i18n.test.ts` | Every `t()`/`translate()`/`msg()` in the code has an Indonesian translation, genre names & chat system notes complete, `{…}` placeholders consistent, fallback to English |
+
+### Web Push encryption against other implementations
+
+The unit tests decrypt with a receiver written in this repo, so the encryption was also checked against outside code:
+
+- **`http_ece`** (an independent Node implementation of the same encryption, used by the `web-push` package): the vector printed by `push::tests::vector` (browser private key, `p256dh`, `auth`, encrypted body) decrypts to `hello from partello`.
+- **Google FCM**: `push::live` sends a VAPID-signed, encrypted request to a made-up FCM subscription. FCM answers **410** (the subscription does not exist): the request got past VAPID authentication.
 
 ## Manual test: two browsers, synced playback
 
@@ -74,6 +85,13 @@ Use two or three devices (or browsers with separate localStorage) in the same ro
 | 5 | Host closes the tab | After about 10 seconds someone still in the room gets the playback controls; when the host comes back, the controls return to them |
 | 6 | Paste a YouTube playlist link (with `YOUTUBE_API_KEY` set) | Offer to add the whole playlist; the videos are added to the queue up to its limit. A mix (`list=RD…`) is refused with an explanation |
 | 7 | Host ticks "Keep this room forever" | The setting stays after reload; the room is not purged by `ROOM_RETENTION_DAYS` |
+| 8 | Host presses the timer button ("Start together") while two devices watch | Both pause, a big 3-2-1 appears over the video on both, then the video plays on both at the same moment from the same spot. Pausing or seeking during the 3 seconds cancels it. Guests in a host-only room do not see the button |
+| 9 | Send "look at 1:30" in the chat, then click the time; press the pin button next to the reactions | For the host the time is a link and the room jumps to 1:30 on every device; a guest without control sees it highlighted only. The pin posts "📌 m:ss" of the current moment, which is clickable the same way |
+| 10 | Theater mode on a desktop browser, then on a phone (iPhone too) | The player fills the screen (real full screen where supported, a full-window layout on iPhone) with the latest messages, a chat box, reactions and call controls over the video; sending a message works from there; chat can be hidden; Esc or the button exits |
+| 11 | Install the app: Chrome/Edge on desktop or Android via "Install app" on the landing page; iPhone via Share → Add to Home Screen | Partello opens in its own window with its icon. With the network off, reopening shows the cached app instead of the browser's offline page |
+| 12 | Bell in the room header on device A (allow notifications; on iPhone/iPad from the Home Screen app, iOS 16.4+), close Partello on A, then on device B join that empty room at least 2 minutes after the server started | A gets "<room name>: B is watching … Tap to join." in the language A used; tapping it opens the room. Nothing arrives if A already has that room open in front, and only one notification per room per 10 minutes |
+
+Scenarios 11 and 12 need HTTPS or `http://localhost`, and a production build of the frontend (`npm run build`, served by the Rust server): the service worker is not registered by the Vite dev server. To reach a phone, use the tunnel (see the end of the next section).
 
 ## Manual WebRTC test (needs real browsers & networks)
 

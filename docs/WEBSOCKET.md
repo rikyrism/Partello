@@ -45,6 +45,7 @@ Every frame is a JSON object with a `type` field. The Rust types live in `server
 | `queue_move` | `item_id`, `to_index` | Playback controller |
 | `queue_skip` | – | Playback controller |
 | `skip_vote` | `item_id`, `vote` (bool) | Anyone; `vote: false` takes the vote back. Ignored if `item_id` is no longer the current video. Skips at `floor(n/2)+1` votes from the `n` connected participants |
+| `start_countdown` | – | Playback controller, while a video is playing or paused (otherwise `conflict`). Pauses at the current position, then `countdown`; the video plays for everyone 3 seconds later. See `countdown` below |
 | `react` | `emoji` | Only one of 😂 🔥 😱 ❤️ 👏 😭 🤯 👀; anything else is `validation_failed` |
 | `voice_join` | `muted`, `camera` | Max. `limits.max_voice_participants` people in the call; when full: "The call is full (N people)" |
 | `voice_update` | `muted`, `camera` | Must already be in the call |
@@ -54,7 +55,9 @@ Every frame is a JSON object with a `type` field. The Rust types live in `server
 | `kick` | `participant_id` | Host only; the participant is removed, their session revoked, their tabs closed with `4003` |
 | `leave` | – | Leave immediately; the session is revoked |
 
-Per-connection rate limits (token bucket): general 30/second, playback 4/second (`playback_control`, `queue_play`, `queue_skip`, `skip_vote`), queue 0.5/second with burst 5 (`queue_add`, `queue_add_playlist`, `queue_remove`, `queue_move`), reactions 3/second with burst 10, signaling 60/second (burst 300, separate from the general budget). One session has at most 3 connections. Violations are answered with `error` with `code: "rate_limited"`.
+Per-connection rate limits (token bucket): general 30/second, playback 4/second (`playback_control`, `queue_play`, `queue_skip`, `skip_vote`, `start_countdown`), queue 0.5/second with burst 5 (`queue_add`, `queue_add_playlist`, `queue_remove`, `queue_move`), reactions 3/second with burst 10, signaling 60/second (burst 300, separate from the general budget). One session has at most 3 connections. Violations are answered with `error` with `code: "rate_limited"`.
+
+Chat timestamps and the 📌 button need nothing extra from the protocol: "📌 12:45" is an ordinary `chat_send`, and clicking a time in the chat sends an ordinary `playback_control` seek (refused as usual for people who cannot control playback).
 
 A participant who loses all their connections is automatically taken out of the call (the call seat is freed). After reconnecting, the client sends `voice_join` again.
 
@@ -70,6 +73,7 @@ A participant who loses all their connections is automatically taken out of the 
 | `queue_updated` | `queue`, `actor_id`, `nonce?` | Every queue change; `nonce` and `actor_id` as above |
 | `chat_message_created` | `message` (the sender's `nonce` is included) | New message |
 | `reaction` | `participant_id`, `emoji` | Someone sent a reaction (to everyone, including the sender) |
+| `countdown` | `start_at` (server ms), `version`, `actor_id` | Right after the `playback_changed` (paused) caused by `start_countdown`. Show 3-2-1 until `start_at`. At `start_at` the server sends `playback_changed` (playing, same position, `actor_id: null`), unless playback changed first: any `playback_changed` with a `version` above this one cancels the countdown, and then nothing more is sent for it |
 | `skip_votes` | `item_id`, `voters` (uuid[]), `skipped` | A skip vote was added or taken back. With `skipped: true` the video was skipped and `queue_updated`/`playback_changed` with `actor_id: null` follow |
 | `voice_signal` | `from`, `data` | WebRTC signaling, for the recipient only (mesh mode) |
 | `call_token` | `url`, `token` | SFU mode only: sent only to the participant whose `voice_join` was accepted. Connect to LiveKit at `url` with `token` |
@@ -129,4 +133,8 @@ The client computes the current position: `position + (status == "playing" ? (se
 ← {"type":"reaction","participant_id":"…","emoji":"🔥"}
 → {"type":"skip_vote","item_id":"…","vote":true}
 ← {"type":"skip_votes","item_id":"…","voters":["…"],"skipped":false}
+→ {"type":"start_countdown"}
+← {"type":"playback_changed","playback":{"status":"paused","position":40.2,"version":3,…},"actor_id":"…"}
+← {"type":"countdown","start_at":1793113550445,"version":3,"actor_id":"…"}
+← {"type":"playback_changed","playback":{"status":"playing","position":40.2,"version":4,…},"actor_id":null}
 ```

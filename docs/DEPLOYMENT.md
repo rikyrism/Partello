@@ -29,6 +29,8 @@ The final image is based on `debian:bookworm-slim`, runs as a non-root user, and
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_API_URL` | see below | Optional, SFU calls |
 | `YOUTUBE_API_KEY` | – | Optional, for YouTube search and playlist import. Store it as a secret |
 | `ROOM_RETENTION_DAYS` | `30` | Rooms untouched this long are deleted, except permanent rooms |
+| `VAPID_PRIVATE_KEY` | – | Optional. Pins the push notification key (base64url P-256 private key). Empty: generated on first start and kept in the database. Store it as a secret |
+| `VAPID_SUBJECT` | `mailto:ops@partello.app` | Optional contact for browser push services. Empty: `PUBLIC_BASE_URL` when it is `https://`, otherwise `mailto:push@example.org` |
 
 All secrets are injected as environment variables or through a secret manager, **never** baked into the image or the repository.
 
@@ -36,11 +38,14 @@ All secrets are injected as environment variables or through a secret manager, *
 
 **Permanent rooms.** The host can tick "Keep this room forever" in the room settings. Such a room is never deleted by `ROOM_RETENTION_DAYS`, so its link keeps working. Other rooms (and their chat) are deleted after that many days without activity.
 
+**Push notifications.** Nothing to configure. On first start the server generates a VAPID key pair and stores it in the `server_settings` table, so it survives restarts and is included in database backups. Every browser subscription is tied to that key: if it is lost or replaced (a fresh database, a different `VAPID_PRIVATE_KEY`), existing subscriptions stop working and people have to press the bell again. Set `VAPID_PRIVATE_KEY` only to keep the same key across databases. Push needs HTTPS (see below); the startup log warns `push notifications disabled` if the key could not be loaded. The server only ever sends to the push services of the major browsers (Google, Mozilla, Apple, Microsoft), so outbound HTTPS to them must be allowed.
+
 ## 3. HTTPS and WebSocket
 
 Put a reverse proxy (Caddy, nginx, Traefik, or a cloud load balancer) in front of port 8080:
 
 - TLS is required: WebRTC (`getUserMedia`) only works on secure origins, and the WebSocket must be `wss://`.
+- The service worker (installable app, offline page, push notifications) also needs a secure origin. `http://localhost` counts as secure for development; any other plain-HTTP address does not.
 - Forward the WebSocket upgrade for `/api/rooms/*/ws` with an idle timeout of ≥ 75 seconds (the server pings every 20 seconds).
 
 Caddy example:
@@ -160,6 +165,8 @@ Optional settings go in `.env.tunnel` (copy it from [`.env.tunnel.example`](../.
 - `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`: LiveKit Cloud for bigger calls.
 - `YOUTUBE_API_KEY`: YouTube search and playlist import.
 
+The tunnel is HTTPS, so installing the app and push notifications work through it. Because the address changes on every run, an installed app or a notification subscription from an earlier run points at an address that no longer exists; install and subscribe again on the new address.
+
 ## 7. Health checks
 
 - `GET /healthz`: the process is alive (liveness).
@@ -172,12 +179,13 @@ This version is designed for **a single instance** (room sessions live in memory
 1. Use sticky routing on the path `/r/{slug}` and `/api/rooms/{slug}/…` so a room always lands on the same instance, or
 2. Follow the migration path in [ARCHITECTURE.md](ARCHITECTURE.md#scale-and-distributed-state) (state and fan-out in Redis).
 
-Each room's current video and queue are saved in PostgreSQL (`rooms.saved_state`): every 5 seconds when something changed, before an idle room is unloaded from memory, and on graceful shutdown. A restart (deploy) still drops every connection, because sessions are in memory, so everyone reconnects; that takes a few seconds. Clients reconnect and rejoin automatically. A video that was playing keeps playing if the server was back within 2 minutes; after a longer outage it waits paused at the same spot.
+Each room's current video and queue are saved in PostgreSQL (`rooms.saved_state`): every 5 seconds when something changed, before an idle room is unloaded from memory, and on graceful shutdown. A restart (deploy) still drops every connection, because sessions are in memory, so everyone reconnects; that takes a few seconds. No "someone started watching" notifications are sent in the first 2 minutes after a start, so this mass reconnect does not wake everyone's phone. Clients reconnect and rejoin automatically. A video that was playing keeps playing if the server was back within 2 minutes; after a longer outage it waits paused at the same spot.
 
 ## 9. Go-live checklist
 
 - [ ] HTTPS + `wss://` working, `ALLOWED_ORIGINS` correct
 - [ ] TURN running and tested from a mobile data connection
+- [ ] Push notification tested: bell on one device, start watching from another after the first 2 minutes of uptime
 - [ ] If using the SFU, a call with 3+ cameras tested from mobile data
 - [ ] Scheduled PostgreSQL backups
 - [ ] JSON logs shipped to an observability system; alert on `/readyz`

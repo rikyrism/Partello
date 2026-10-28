@@ -37,10 +37,12 @@ Create a room, send the link, press play. Everyone watches the same frame at the
 - The server keeps one clock per room; every player measures its drift twice a second and quietly corrects it.
 - Shared queue with search, whole-playlist import (both through the YouTube Data API, optional), "play now", reorder, and auto-advance.
 - Vote to skip: when the host holds the remote, the room can still skip a video once most people agree.
+- "Start together": a big 3-2-1 for everyone, then the video starts at the same moment.
+- Theater mode: full screen with the chat, reactions and call over the video.
 - Quality and subtitles stay per viewer through YouTube's own player; subtitle language follows the browser.
 
 **Talk while you watch**
-- Real-time chat with history for people who join late, replies, @mentions, notification sounds and unread badges.
+- Real-time chat with history for people who join late, replies, @mentions, notification sounds and unread badges. Times like `12:45` are links that jump the room there; 📌 marks the current moment.
 - Emoji reactions that float over the video for everyone.
 - Voice and camera over WebRTC: peer-to-peer for small groups, or through a [LiveKit](https://livekit.io) SFU for bigger calls. Mute, push-to-talk, per-person volume and speaking indicators.
 - The video automatically quiets down while anyone talks, so voices stay clear.
@@ -52,6 +54,7 @@ Create a room, send the link, press play. Everyone watches the same frame at the
 - One-click invitation with a ready-to-paste message that includes the link, the PIN and what's playing.
 - Survives flaky mobile networks and server restarts: reconnects on its own, and the video and queue are still there.
 - English and Indonesian interface, switchable on every page.
+- Installable as an app (PWA), with push notifications when someone starts watching in a room you follow.
 
 **Built to be hosted**
 - A single Rust binary serves the API, WebSockets and the web app; PostgreSQL stores rooms and chat.

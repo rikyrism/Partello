@@ -17,6 +17,7 @@ Browser (React)                                Server (Rust, satu proses)
 │ SyncedPlayer ◀── YouTube IFrame Player API │ youtube*.rs      oEmbed + Data API     │
 │ MeshCall ◀──── WebRTC P2P ───▶ peer lain   │ ice.rs           kredensial TURN       │
 │ SfuCall  ◀──── WebRTC ───▶ LiveKit (ops.)  │ sfu.rs           token/admin LiveKit   │
+│ sw.js (PWA) ◀── layanan push browser ◀──   │ push.rs          Web Push (VAPID)      │
 └──────────────────────────────┘             └────────────────────────────────────────┘
 ```
 
@@ -39,6 +40,7 @@ Browser (React)                                Server (Rust, satu proses)
 | `youtube_search` | YouTube Data API v3 (opsional), hanya di server, dengan cache; juga mengambil daftar video playlist |
 | `ice` | ICE server untuk call: STUN plus TURN dari Cloudflare, coturn, atau kredensial statis |
 | `sfu` | LiveKit (opsional): menandatangani token join, mengeluarkan orang dari room LiveKit |
+| `push` | Web Push: memvalidasi subscription (hanya layanan push browser), mengenkripsi payload (RFC 8291 `aes128gcm`), menandatangani request dengan VAPID (RFC 8292, ES256). Rust murni di atas RustCrypto, tanpa OpenSSL |
 | `security` | Slug acak (CSPRNG, rejection sampling), token 256-bit, hash SHA-256, kredensial TURN HMAC |
 
 ### Model sinkronisasi
@@ -65,6 +67,15 @@ posisi_sekarang = position + (status == playing ? (server_now - updated_at) / 10
 - Vote yang berhasil diumumkan dengan `skip_votes` (`skipped: true`), diikuti `queue_updated`/`playback_changed` biasa dengan `actor_id: null`.
 - Host (dan semua orang, jika `control_mode = everyone`) tetap bisa melewati video langsung dengan `queue_skip`.
 
+### Mulai bareng (hitung mundur)
+
+"Mulai bareng" membuat satu grup menekan play di saat yang sama, dengan hitungan 3-2-1 yang dilihat semua orang.
+
+- `start_countdown` datang dari orang yang boleh mengontrol playback (kena rate limit seperti event playback lain), dan hanya saat video sedang diputar atau di-pause; selain itu ditolak dengan `conflict`.
+- Server mem-pause di posisi saat ini (sehingga `version` naik) lalu mem-broadcast `playback_changed`, kemudian `countdown` dengan `start_at = now + 3000` (`COUNTDOWN_MS`), `version` saat di-pause, dan `actor_id`.
+- Sebuah task timer di luar lock room bangun setelah 3 detik dan memutar video dari posisi yang sama, dengan `actor_id: null`, tetapi hanya jika `playback.version` masih sama dengan versi hitung mundur dan video masih di-pause. Perubahan apa pun di antaranya (pause, seek, video lain) menaikkan versi sehingga hitung mundur batal tanpa pemberitahuan.
+- Klien menggambar 3-2-1 besar di atas video berdasarkan `start_at` dan offset jam server-nya, menampilkan "Mulai!" sebentar, lalu menghapus overlay begitu versi playback yang lebih baru datang.
+
 ### Presence & reconnect
 
 - `POST /join` **memesan kursi** (60 detik), lalu WebSocket mengautentikasi dengan frame pertama `auth`. Token tidak pernah ada di URL, sehingga tidak tercatat di log proxy.
@@ -80,7 +91,8 @@ posisi_sekarang = position + (status == playing ? (server_now - updated_at) / 10
 - Satu `std::sync::Mutex` per room, hanya dipegang untuk kerja sinkron (transisi state + `try_send`). Tidak ada `await` saat lock dipegang.
 - Event broadcast diserialisasi **sekali** lalu dikirim ke channel berbatas (256) milik setiap koneksi. Konsumen yang terlalu lambat diputus, bukan dibiarkan menumpuk memori.
 - Lookup oEmbed dan playlist (jaringan) dilakukan di luar lock; izin dicek sebelum dan sesudahnya.
-- Batas: body HTTP 16 KB, pesan WebSocket 64 KB, sinyal WebRTC 24 KB, chat 500 karakter, riwayat chat di memori 100 pesan, antrean 100, impor playlist 50 video.
+- Batas: body HTTP 16 KB, pesan WebSocket 64 KB, sinyal WebRTC 24 KB, chat 500 karakter, riwayat chat di memori 100 pesan, antrean 100, impor playlist 50 video, subscription push 200 per room.
+- Notifikasi push dikirim dari task latar belakang, di luar lock room, sehingga layanan push yang lambat tidak pernah menahan room.
 
 ### Data persisten (PostgreSQL)
 
@@ -89,8 +101,10 @@ posisi_sekarang = position + (status == playing ? (server_now - updated_at) / 10
 | `rooms` | slug, nama, hash host key, pengaturan (termasuk `permanent`), pemilik API key, `last_active_at`, `saved_state` | Link undangan harus tetap valid setelah restart; video dan antrean tetap ada setelahnya |
 | `chat_messages` | riwayat chat per room, termasuk kutipan `reply_to` | Peserta yang terlambat bisa mengikuti percakapan |
 | `api_keys` | label, **hash** key, waktu pakai | Autentikasi API developer |
+| `server_settings` | pasangan key/value kecil untuk seluruh server; saat ini private key VAPID (`vapid_private_key`) | Setiap subscription push terikat pada key VAPID server, jadi key itu harus bertahan setelah restart |
+| `push_subscriptions` | per room: endpoint push, `p256dh`, `auth`, bahasa (`en`/`id`); unik per room + endpoint | Notifikasi "ada yang mulai nonton" untuk browser yang memintanya |
 
-Tidak ada email, password, atau IP yang disimpan. Room yang tidak dikunjungi selama `ROOM_RETENTION_DAYS` (default 30) dihapus bersama chat-nya, kecuali room **permanen** (pengaturan host "Keep this room forever"), yang tidak pernah dihapus.
+Tidak ada email, password, atau IP yang disimpan. Subscription push mengidentifikasi sebuah browser di layanan push-nya, bukan seseorang. Room yang tidak dikunjungi selama `ROOM_RETENTION_DAYS` (default 30) dihapus bersama chat-nya, kecuali room **permanen** (pengaturan host "Keep this room forever"), yang tidak pernah dihapus.
 
 #### State room yang disimpan
 
@@ -104,7 +118,19 @@ Saat room dimuat lagi: jika video sedang diputar dan server kembali dalam 2 meni
 
 Sesi tidak disimpan; sesi hanya ada di memori. Setelah restart klien bergabung ulang tanpa terlihat (dengan participant id baru), dan pembuat room mendapatkan kembali peran host lewat host key yang tersimpan.
 
-Migrasi `20261028000003_room_state.sql` menambahkan `rooms.saved_state JSONB`, `rooms.permanent BOOLEAN`, dan `chat_messages.reply_to JSONB`.
+Migrasi `20261028000003_room_state.sql` menambahkan `rooms.saved_state JSONB`, `rooms.permanent BOOLEAN`, dan `chat_messages.reply_to JSONB`. Migrasi `20261028000004_push.sql` menambahkan `server_settings` dan `push_subscriptions` (ikut terhapus bersama room-nya).
+
+### Notifikasi push
+
+Sebuah browser bisa minta diberi tahu saat ada yang mulai nonton di sebuah room, bahkan saat Partello tertutup (tombol lonceng di header room). Ini Web Push standar, diimplementasikan di `push.rs` tanpa library push pihak ketiga.
+
+- **Kapan**: seseorang tersambung ke room yang sebelumnya tidak ada orang tersambung. Setiap subscription room itu lalu menerima notifikasi berjudul nama room: "Riky sedang nonton Wildwood. Ketuk untuk gabung." (judul video sampai tanda `|` pertama), atau "Riky mulai nonton bareng. Ketuk untuk gabung." jika belum ada video. Teksnya dalam bahasa yang dipilih saat subscribe (`en` atau `id`); mengetuknya membuka `/r/{slug}`.
+- **Seberapa sering**: paling banyak satu per room setiap 10 menit (dicatat bersama room selama room ada di memori), dan tidak ada sama sekali dalam 2 menit pertama setelah server menyala, karena saat itu semua orang sedang reconnect dan room tidak benar-benar "dimulai".
+- **Enkripsi** (RFC 8291): satu record `aes128gcm` per pesan, dengan key P-256 sementara yang baru dan salt acak setiap kali; key `p256dh` dan `auth` milik browser menurunkan content key. **Tanda tangan** (RFC 8292): JWT VAPID ES256 dengan `aud` = origin layanan push, `exp` 12 jam, dan `sub` = `VAPID_SUBJECT`. Request membawa `TTL` 6 jam, `Urgency: normal`, dan `Topic` per room sehingga notifikasi yang belum terkirim diganti oleh yang lebih baru.
+- **Key VAPID**: dibuat saat pertama kali menyala dan disimpan di `server_settings`, atau dipatok dengan `VAPID_PRIVATE_KEY`. Browser subscribe dengan public key-nya (`GET /api/push/key`), jadi mengganti key diam-diam mengakhiri semua subscription yang ada. Dengan store in-memory (tanpa `DATABASE_URL`) key baru dibuat setiap kali menyala. Jika key gagal dimuat, push dimatikan dengan peringatan dan endpoint push menjawab `unavailable`.
+- **Tanpa SSRF**: subscription hanya diterima jika endpoint-nya `https` di port 443 pada layanan push browser yang dikenal (`fcm.googleapis.com`, `android.googleapis.com`, `push.services.mozilla.com`, `push.apple.com`, `notify.windows.com`, `push.api.chrome.google.com`, atau subdomain-nya), maksimal 1024 karakter, dengan `p256dh` P-256 yang valid dan `auth` 16 byte. Dengan begitu server tidak pernah bisa disuruh memanggil alamat sembarang. Endpoint adalah URL kapabilitas dan tidak pernah dicatat di log.
+- **Pembersihan**: layanan push yang menjawab 404 atau 410 berarti subscription sudah tidak ada (berhenti langganan, kedaluwarsa), dan subscription itu dihapus. Satu room menyimpan maksimal 200 subscription; lebih dari itu, yang paling lama dibuang. Subscribe lagi dari browser yang sama memperbarui key dan bahasanya.
+- **Service worker**: menampilkan notifikasi kecuali ada jendela yang terlihat dan sudah membuka room itu; ketukan memfokuskan jendela yang sudah membuka room tersebut atau membuka jendela baru.
 
 ## Frontend
 
@@ -112,11 +138,16 @@ Migrasi `20261028000003_room_state.sql` menambahkan `rooms.saved_state JSONB`, `
 - `room/store.ts` berisi reducer murni plus external store kecil. Komponen berlangganan potongan state lewat `useSyncExternalStore`, sehingga pesan chat tidak me-render ulang player.
 - `SyncedPlayer` memakai YouTube IFrame Player API resmi dengan kontrol bawaan YouTube (tanpa overlay di atas iframe, sesuai kebijakan YouTube). Kontrol Partello berada di bawah player.
 - Halaman room dan developer di-lazy-load; landing tidak memuat kode WebRTC/player. Klien LiveKit hanya dimuat dalam mode SFU.
-- **Reaksi**: bar reaksi di bawah player; emoji melayang di atas video untuk semua orang. Di bawah `prefers-reduced-motion` emoji hanya memudar.
-- **Chat**: tombol balas per pesan dengan blok kutipan; autocomplete `@mention` (ketik `@`, lalu panah/Tab/Enter); mention untuk Anda disorot. Suara notifikasi dibuat dengan Web Audio: mention dan balasan untuk Anda selalu berbunyi, pesan lain hanya jika chat tidak terlihat. Tombol lonceng mematikannya; pilihan disimpan per perangkat.
+- **Reaksi**: bar reaksi di bawah player; emoji melayang di atas video untuk semua orang. Di bawah `prefers-reduced-motion` emoji hanya memudar. Tombol pin di sebelahnya mengirim "📌 m:ss" untuk momen saat ini ke chat.
+- **Mulai bareng**: tombol timer di bar playback (untuk orang yang boleh mengontrol playback) mengirim `start_countdown`; `CountdownOverlay` menampilkan 3-2-1 besar di atas video.
+- **Mode bioskop**: tombol di bar playback membuat area player layar penuh dengan Fullscreen API, atau tata letak tetap seukuran jendela jika API itu tidak ada (iPhone). `TheaterOverlay` menaruh pesan chat terbaru, kotak chat ringkas, reaksi, dan kontrol call di atas video; chat bisa disembunyikan. Esc atau tombol yang sama untuk keluar.
+- **Chat**: tombol balas per pesan dengan blok kutipan; autocomplete `@mention` (ketik `@`, lalu panah/Tab/Enter); mention untuk Anda disorot. Suara notifikasi dibuat dengan Web Audio: mention dan balasan untuk Anda selalu berbunyi, pesan lain hanya jika chat tidak terlihat. Tombol lonceng mematikannya; pilihan disimpan per perangkat. Mention atau balasan saat tab tersembunyi juga memunculkan notifikasi sistem, jika izin notifikasi sudah diberikan sebelumnya (misalnya lewat lonceng notifikasi room).
+- **Timestamp di chat**: waktu seperti `12:45` atau `1:02:03` di dalam pesan menjadi link. Bagi orang yang boleh mengontrol playback, klik akan memindahkan seluruh room ke detik itu (seek `playback_control` biasa); orang lain melihatnya disorot. Waktu yang melewati akhir video tetap teks biasa. Semuanya di sisi klien (`features/chat/timestamps.ts`), tanpa perubahan protokol.
 - **Antrean**: jika link yang ditempel berisi playlist, tombol playlist mengimpornya (hanya jika server punya `YOUTUBE_API_KEY`).
 - **Pengaturan**: dialog pengaturan host berisi "Keep this room forever" (`permanent`).
 - **i18n** (`web/src/i18n`): teks ditulis dalam bahasa Inggris di kode (`t('Join call')`) dan dicari di kamus `id.ts` saat bahasa Indonesia dipilih. Pesan error dari server juga diterjemahkan berdasarkan teksnya. Test `i18n.test.ts` memindai seluruh kode dan gagal bila ada teks tanpa terjemahan atau placeholder yang tidak cocok.
+- **PWA**: web manifest dengan ikon dan service worker (`web/public/sw.js`, hanya didaftarkan di build produksi) membuat Partello bisa dipasang. Halaman memakai network-first dengan app shell yang di-cache sebagai cadangan saat offline; `/assets/` dan `/icons/` memakai cache-first (file ber-hash tidak pernah berubah); `/api/` dan health check tidak pernah di-cache atau dicegat. Landing page menampilkan tombol "Pasang aplikasi" saat browser menawarkan pemasangan (`beforeinstallprompt`).
+- **Subscription push** (`lib/pwa.ts`, `NotifyButton`): lonceng di header room meminta izin, men-subscribe browser ini dengan key VAPID server, dan mendaftarkannya untuk room itu dalam bahasa antarmuka. Di iPhone dan iPad tombol ini lebih dulu menjelaskan bahwa Partello harus ditambahkan ke Layar Utama (iOS 16.4+).
 - Landing page mengikuti arah desain dari Taste Skill ("page is the object": invite link sebagai tiket bioskop). Motion memakai transform/opacity/clip-path dan dimatikan di bawah `prefers-reduced-motion`.
 
 ## Voice & video (WebRTC)

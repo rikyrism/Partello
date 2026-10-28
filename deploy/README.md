@@ -27,7 +27,7 @@ Estimated TURN bandwidth: in a 4-person call with cameras, one person who has to
 ## What you need
 
 1. A VPS with Ubuntu 22.04/24.04 and SSH access.
-2. A **domain** (or subdomain), for example `watch.yourdomain.com`. HTTPS is required: without it, browsers refuse microphone/camera access.
+2. A **domain** (or subdomain), for example `watch.yourdomain.com`. HTTPS is required: without it, browsers refuse microphone/camera access, installing the app, and push notifications.
 3. (Optional) A YouTube Data API v3 key for search and playlist import.
 
 ## Steps
@@ -138,7 +138,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --
 
 A restart drops connections briefly; everyone reconnects and rejoins on their own within a few seconds. The current video and queue of every room are saved in the database, so nothing is lost: a video that was playing keeps playing if the app was back within 2 minutes, otherwise it waits paused at the same spot.
 
-**Database backup** (rooms, chat, saved queues, API keys), for example daily via cron:
+**Database backup** (rooms, chat, saved queues, API keys, notification subscriptions and the key they are tied to), for example daily via cron:
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env exec -T postgres \
@@ -156,6 +156,8 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env logs -f 
 - **Use the `https://` link from the Invite button.** A `localhost` link only opens on your own computer.
 - **TURN is a must on mobile networks.** Many mobile carriers (in Indonesia, most of them) use CGNAT; without TURN, some friends can watch and chat but **cannot connect to voice/video**. This stack already includes coturn. Hosted TURN (Cloudflare Realtime TURN, Metered.ca) is for setups without your own coturn, such as the tunnel; see [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#4-turn).
 - **iPhone/Android:** the browser sometimes holds back video sound until the screen is tapped once; Partello shows a "Turn on sound" button.
+- **Install it like an app.** On Android and desktop Chrome/Edge, the landing page shows "Install app"; on iPhone/iPad use Share → Add to Home Screen. Theater mode (the full-screen button under the video) keeps the chat, reactions and call over the video, which suits phones.
+- **"Someone started watching" notifications.** The bell in the room header notifies that device when someone starts watching in the room, even with Partello closed. Nothing to configure: the server creates its notification key on first start and keeps it in the database (so restore backups rather than starting from an empty database, or everyone has to press the bell again). On iPhone/iPad it only works from the app added to the Home Screen (iOS 16.4 or later). No notifications are sent in the first 2 minutes after a restart, and at most one per room every 10 minutes.
 - **Using Cloudflare (orange proxy) in front of the VPS?** Add `CLIENT_IP_HEADER: CF-Connecting-IP` to the `app` service and enable WebSocket support in Cloudflare. Without that header, every user appears as a Cloudflare IP and they can hit each other's rate limits. Note: TURN and the SFU's media ports cannot go through the Cloudflare proxy, so create a separate DNS record (e.g. `turn.yourdomain.com`, grey proxy) and use it in `TURN_URLS`.
 - **One home/café network** shares one IP. The PIN attempt limit (10 per 5 minutes per IP) is loose enough for a family, but don't hand out a wrong PIN.
 - **Rooms you want to keep:** tick "Keep this room forever" in the room settings. Other rooms are deleted after `ROOM_RETENTION_DAYS` (30 by default) without activity.

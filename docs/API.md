@@ -33,6 +33,20 @@ This API lets other products (websites, Discord/Telegram bots, apps) open a Part
 
 Later changes are made by the room's host in the app (settings dialog, "Keep this room forever"), which calls `PATCH /api/rooms/{slug}/settings` with the host's session token. Its body takes any of `name`, `control_mode`, `queue_mode`, `permanent`, and `pin` (an empty string removes the PIN); it answers with the updated RoomInfo, and everyone in the room receives `room_settings_changed`.
 
+## Push notifications (web app)
+
+The app's "notify me" bell uses three endpoints outside `/api/v1`. They take no API key: the two room endpoints use the participant's session token (`Authorization: Bearer pts_…`, from `POST /api/rooms/{slug}/join`). See [ARCHITECTURE.md](ARCHITECTURE.md#push-notifications) for how notifications are sent.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/push/key` | `{"public_key": "…"}`: the server's VAPID public key (base64url) for `PushManager.subscribe({ applicationServerKey })` |
+| `POST` | `/api/rooms/{slug}/push` | Body `{"subscription": <PushSubscription.toJSON()>, "lang": "en"}` (`lang`: `en` or `id`). Notify this browser when someone starts watching in the room; answers 204. Subscribing again updates the keys and language |
+| `DELETE` | `/api/rooms/{slug}/push` | Body `{"endpoint": "…"}`. Stop notifications for this room; answers 204 |
+
+- Only `https` endpoints at browser push services (Google FCM, Mozilla, Apple, Windows) are accepted; anything else is `validation_failed` (422).
+- At most one notification per room every 10 minutes, written in `lang` (anything other than `id` means English). A room keeps at most 200 subscriptions; past that the oldest are dropped.
+- `POST` counts against the same per-IP limit as joining a room. When push is not set up on the server, `GET /api/push/key` and `POST` answer `unavailable` (503).
+
 ## Example
 
 ```bash
