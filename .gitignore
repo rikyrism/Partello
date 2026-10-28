@@ -1,0 +1,18 @@
+# Dependencies and builds
+node_modules/
+web/dist/
+server/target/
+
+# Local environment and secrets
+.env
+.env.local
+*.log
+
+# Tool output
+.taste-skill/inspect/
+.DS_Store
+deploy/.env
+.tunnel/
+
+# Local design-tool output
+.taste-skill/

@@ -1,0 +1,103 @@
+# Partello production stack for a single VPS.
+#
+#   cp deploy/.env.prod.example deploy/.env   # fill it in
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
+#
+# Exposes only 80/443 (Caddy, automatic HTTPS) and the TURN ports.
+# Postgres and the app are reachable only inside the Docker network.
+
+services:
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+  app:
+    build: ..
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://partello:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/partello
+      ALLOWED_ORIGINS: https://${DOMAIN}
+      PUBLIC_BASE_URL: https://${DOMAIN}
+      # Caddy is the only client of the app, so its X-Forwarded-For is trusted.
+      TRUST_PROXY: "true"
+      LOG_FORMAT: json
+      RUST_LOG: partello=info,tower_http=warn
+      STUN_URLS: stun:${DOMAIN}:3478,stun:stun.l.google.com:19302
+      TURN_URLS: turn:${DOMAIN}:3478?transport=udp,turn:${DOMAIN}:3478?transport=tcp
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?set TURN_SHARED_SECRET}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      ROOM_MAX_PARTICIPANTS: ${ROOM_MAX_PARTICIPANTS:-16}
+      ROOM_MAX_VOICE: ${ROOM_MAX_VOICE:-8}
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: partello
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: partello
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partello -d partello"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # TURN relay for viewers behind carrier-grade NAT, strict Wi-Fi or office
+  # firewalls. Host networking: it needs the public IP and a UDP port range.
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SHARED_SECRET}
+      - --realm=${DOMAIN}
+      - --external-ip=${PUBLIC_IP:?set PUBLIC_IP}
+      - --min-port=49152
+      - --max-port=49352
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      # Never relay into private networks (the VPS's own services included).
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --user-quota=24
+      - --total-quota=1200
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

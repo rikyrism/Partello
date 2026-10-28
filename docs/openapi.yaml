@@ -1,0 +1,394 @@
+openapi: 3.1.0
+info:
+  title: Partello API
+  version: 0.1.0
+  description: |
+    REST API of Partello, a watch-party app with synchronized YouTube playback,
+    chat and WebRTC calls.
+
+    * **Web app API** (`/api/rooms…`) is used by the Partello frontend. Anonymous:
+      a room is created, people join with a display name and receive a session
+      token used for the WebSocket and host-only calls.
+    * **Developer API** (`/api/v1…`) lets other products create and control
+      rooms. Authenticate with `Authorization: Bearer ptk_…` from your server.
+
+    Real-time traffic (presence, playback, queue, chat, WebRTC signaling) uses
+    the WebSocket at `/api/rooms/{slug}/ws`, documented in docs/WEBSOCKET.md.
+
+    Every error has the shape `{ "error": { "code": "...", "message": "..." } }`.
+servers:
+  - url: /
+tags:
+  - name: Health
+  - name: Rooms
+  - name: Developer API
+
+components:
+  securitySchemes:
+    session:
+      type: http
+      scheme: bearer
+      description: Session token (`pts_…`) from POST /api/rooms/{slug}/join.
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Developer API key (`ptk_…`) from POST /api/v1/keys. Server-side only.
+  parameters:
+    slug:
+      name: slug
+      in: path
+      required: true
+      description: 12-character room code.
+      schema: { type: string, pattern: '^[2-9a-km-zA-HJ-NP-Z]{12}$' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [validation_failed, room_not_found, room_full, unauthorized, forbidden, rate_limited, invalid_video, conflict, unavailable, pin_required, wrong_pin, too_many_connections, internal]
+            message: { type: string }
+    RoomSettings:
+      type: object
+      properties:
+        control_mode: { type: string, enum: [host_only, everyone], default: host_only, description: Who may play, pause, seek and skip. }
+        queue_mode: { type: string, enum: [everyone, host_only], default: everyone, description: Who may add videos. }
+    RoomInfo:
+      type: object
+      required: [slug, name, settings, max_participants, created_at]
+      properties:
+        slug: { type: string }
+        name: { type: string, maxLength: 60 }
+        settings: { $ref: '#/components/schemas/RoomSettings' }
+        max_participants: { type: integer }
+        created_at: { type: integer, description: Unix milliseconds. }
+        has_password: { type: boolean, description: True when joining needs the room's 4-digit PIN. }
+    QueueItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        video_id: { type: string, description: 11-character YouTube id. }
+        title: { type: string }
+        author: { type: [string, 'null'] }
+        thumbnail_url: { type: string, format: uri }
+        start: { type: [integer, 'null'], description: Start offset in seconds from the link's t= parameter. }
+        added_by: { type: string, format: uuid }
+        added_by_name: { type: string }
+    RoomStatus:
+      type: object
+      properties:
+        room: { $ref: '#/components/schemas/RoomInfo' }
+        participant_count: { type: integer }
+        now_playing: { oneOf: [{ $ref: '#/components/schemas/QueueItem' }, { type: 'null' }] }
+        status: { type: string, enum: [idle, playing, paused, ended] }
+        position: { type: number, description: Seconds into the current video, right now. }
+        queue: { type: array, items: { $ref: '#/components/schemas/QueueItem' } }
+    SearchResult:
+      type: object
+      properties:
+        video_id: { type: string }
+        title: { type: string }
+        channel: { type: string }
+        thumbnail_url: { type: string, format: uri }
+        duration: { type: [integer, 'null'], description: Seconds. }
+        is_live: { type: boolean }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200':
+          description: The process is serving requests.
+          content:
+            application/json:
+              example: { status: ok, version: 0.1.0, live_rooms: 3 }
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe (database reachable)
+      responses:
+        '200': { description: Ready }
+        '503': { description: Database unreachable }
+
+  /api/rooms:
+    post:
+      tags: [Rooms]
+      summary: Create a room
+      description: Rate limited to 10 per minute per IP. The returned `host_key` is shown once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name]
+              properties:
+                display_name: { type: string, minLength: 1, maxLength: 32 }
+                name: { type: string, maxLength: 60, description: Defaults to "<display_name>'s room". }
+                settings: { $ref: '#/components/schemas/RoomSettings' }
+                video_url: { type: string, description: Optional first video; the room starts playing it. }
+                pin: { type: string, pattern: '^[0-9]{4}$', description: Optional 4-digit PIN guests must enter. }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  room: { $ref: '#/components/schemas/RoomInfo' }
+                  host_key: { type: string, description: Present it when joining to become host (and to skip the PIN). }
+                  invite_url: { type: string, format: uri }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    get:
+      tags: [Rooms]
+      summary: Room metadata and occupancy (validates an invite link)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  room: { $ref: '#/components/schemas/RoomInfo' }
+                  participant_count: { type: integer }
+                  is_full: { type: boolean }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}/join:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    post:
+      tags: [Rooms]
+      summary: Join a room and get a session token
+      description: Reserves a seat for 60 seconds until the WebSocket authenticates. Rate limited to 30 per minute per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name]
+              properties:
+                display_name: { type: string, minLength: 1, maxLength: 32 }
+                host_key: { type: string, description: The room's host key, if you created it. }
+                pin: { type: string, description: Required when the room has a PIN (unless host_key is valid). 10 attempts per 5 min per address, 30 per 10 min per room. }
+      responses:
+        '200':
+          description: Joined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  participant_id: { type: string, format: uuid }
+                  session_token: { type: string }
+                  is_creator: { type: boolean }
+                  room: { $ref: '#/components/schemas/RoomInfo' }
+        '401': { description: "`pin_required`" }
+        '403': { description: "`wrong_pin`" }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}/settings:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    patch:
+      tags: [Rooms]
+      summary: Change room name and permissions (host only)
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name: { type: string, maxLength: 60 }
+                control_mode: { type: string, enum: [host_only, everyone] }
+                queue_mode: { type: string, enum: [everyone, host_only] }
+                pin: { type: string, description: New 4-digit PIN; an empty string removes it. }
+      responses:
+        '200':
+          description: Updated; everyone in the room receives `room_settings_changed`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomInfo' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}/search:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    get:
+      tags: [Rooms]
+      summary: Search embeddable YouTube videos (room members only)
+      description: Requires the server to have YOUTUBE_API_KEY. 15 searches per minute per participant; results cached 10 minutes.
+      security: [{ session: [] }]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 100 }
+      responses:
+        '200':
+          description: Results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
+        '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}/ws:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    get:
+      tags: [Rooms]
+      summary: WebSocket for real-time room events
+      description: Upgrade to WebSocket, then send `{"type":"auth","token":"pts_…"}` as the first frame. See docs/WEBSOCKET.md.
+      responses:
+        '101': { description: Switching protocols }
+        '403': { description: Origin not allowed }
+
+  /api/v1/keys:
+    post:
+      tags: [Developer API]
+      summary: Create an API key
+      description: Five keys per hour per IP. The key is returned once and stored only as a hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, maxLength: 60 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  label: { type: string }
+                  api_key: { type: string }
+
+  /api/v1/rooms:
+    post:
+      tags: [Developer API]
+      summary: Create a room owned by this key
+      security: [{ apiKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 60 }
+                video_url: { type: string, description: Optional first video; starts playing. }
+                settings: { $ref: '#/components/schemas/RoomSettings' }
+                pin: { type: string, pattern: '^[0-9]{4}$', description: Optional 4-digit PIN; the host_url bypasses it. }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  room: { $ref: '#/components/schemas/RoomInfo' }
+                  invite_url: { type: string }
+                  host_key: { type: string }
+                  host_url: { type: string, description: Invite URL with `#host=<key>`; whoever opens it becomes host. }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/v1/rooms/{slug}:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    get:
+      tags: [Developer API]
+      summary: Room status
+      security: [{ apiKey: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomStatus' }
+        '404': { description: Unknown room, or not owned by this key. }
+
+  /api/v1/rooms/{slug}/play:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    post:
+      tags: [Developer API]
+      summary: Play a video now, for everyone
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomStatus' }
+
+  /api/v1/rooms/{slug}/queue:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    post:
+      tags: [Developer API]
+      summary: Append up to 50 videos to the queue
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [url]
+                    properties:
+                      url: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomStatus' }

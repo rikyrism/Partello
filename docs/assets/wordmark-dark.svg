@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="120" viewBox="0 0 560 120" role="img" aria-label="Partello">
+  <rect x="0" y="20" width="18" height="80" fill="#f2f2f2"/>
+  <path d="M30 20v80l62-40z" fill="#f2f2f2"/>
+  <text x="112" y="88" fill="#f2f2f2" font-family="'Bricolage Grotesque', 'Inter', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="84" font-weight="700" letter-spacing="-3">Partello</text>
+</svg>

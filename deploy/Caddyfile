@@ -1,0 +1,7 @@
+# Automatic HTTPS (Let's Encrypt) for the domain in DOMAIN; WebSockets are
+# proxied transparently, so the app is served over https:// and wss://.
+{$DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy app:8080
+}

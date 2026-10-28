@@ -1,0 +1,65 @@
+# Partello local stack.
+#
+#   docker compose up -d postgres        # database only (for `cargo run` + `npm run dev`)
+#   docker compose up --build            # full app on http://localhost:8080
+#   docker compose --profile turn up -d  # also start a local coturn TURN server
+#
+# Credentials here are for local development only.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: partello
+      POSTGRES_PASSWORD: partello
+      POSTGRES_DB: partello
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partello -d partello"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://partello:partello@postgres:5432/partello
+      ALLOWED_ORIGINS: http://localhost:8080
+      PUBLIC_BASE_URL: http://localhost:8080
+      STATIC_DIR: /app/web
+      RUST_LOG: partello=info,tower_http=info
+      STUN_URLS: ${STUN_URLS:-stun:stun.l.google.com:19302}
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/app/partello-server", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  coturn:
+    profiles: ["turn"]
+    image: coturn/coturn:4.6
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SHARED_SECRET:-change-me-local-only}
+      - --realm=partello.local
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+
+volumes:
+  pgdata:

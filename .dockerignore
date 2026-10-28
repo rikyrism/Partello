@@ -1,0 +1,7 @@
+**/node_modules
+web/dist
+server/target
+.git
+.taste-skill
+*.log
+.env

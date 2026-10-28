@@ -1,0 +1,60 @@
+[package]
+name = "partello-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+repository = "https://github.com/rikyrism/Partello"
+description = "Partello backend: rooms, synchronized playback, chat, and WebRTC signaling."
+
+[lib]
+name = "partello"
+path = "src/lib.rs"
+
+[[bin]]
+name = "partello-server"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP + WebSocket
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "limit", "fs", "set-header", "request-id", "util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# Data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "time", "migrate", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde"] }
+url = "2"
+
+# YouTube oEmbed metadata (title/thumbnail + embeddability check)
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+# Security primitives: random tokens, hashing, ephemeral TURN credentials
+getrandom = "0.4"
+sha2 = "0.11"
+hmac = "0.13"
+sha1 = "0.11"
+base64 = "0.23"
+# Room passwords (Argon2id)
+argon2 = "0.6"
+
+# Errors + observability
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.30"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
