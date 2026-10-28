@@ -21,6 +21,9 @@ async fn main() -> anyhow::Result<()> {
 
     let bind = config.bind_addr;
     let app = build_state(config, store);
+    if let Err(err) = app.hub.init_push().await {
+        tracing::warn!(error = %err, "push notifications disabled");
+    }
     spawn_maintenance(&app);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;

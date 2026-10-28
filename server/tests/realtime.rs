@@ -107,7 +107,7 @@ async fn send(ws: &mut Ws, v: Value) {
 
 async fn next_json(ws: &mut Ws) -> Option<Value> {
     loop {
-        match tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
+        match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
             Ok(Some(Ok(Message::Text(t)))) => return Some(serde_json::from_str(&t).unwrap()),
             Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) | Err(_) => return None,
             Ok(Some(Ok(_))) => continue,
@@ -938,4 +938,97 @@ async fn hosts_can_make_a_room_permanent() {
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["settings"]["permanent"], true);
     assert_eq!(body["settings"]["control_mode"], "host_only", "other settings unchanged");
+}
+
+#[tokio::test]
+async fn countdown_starts_playback_for_everyone() {
+    let s = spawn().await;
+    let (_slug, mut host, mut guest, host_id, _) = s.pair().await;
+    send(&mut host, json!({ "type": "queue_add", "url": VIDEO })).await;
+    next_of(&mut guest, "playback_changed").await;
+
+    send(&mut guest, json!({ "type": "start_countdown" })).await;
+    assert_eq!(next_of(&mut guest, "error").await["code"], "forbidden", "host-only room");
+
+    send(&mut host, json!({ "type": "start_countdown" })).await;
+    let paused = next_of(&mut guest, "playback_changed").await;
+    assert_eq!(paused["playback"]["status"], "paused");
+    let countdown = next_of(&mut guest, "countdown").await;
+    assert_eq!(countdown["actor_id"], host_id);
+    assert_eq!(countdown["version"], paused["playback"]["version"]);
+    let start_at = countdown["start_at"].as_i64().unwrap();
+    let playing = next_of(&mut guest, "playback_changed").await;
+    assert_eq!(playing["playback"]["status"], "playing");
+    assert!(playing["playback"]["updated_at"].as_i64().unwrap() >= start_at);
+}
+
+#[tokio::test]
+async fn browsers_subscribe_to_room_notifications() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let s = spawn().await;
+    // Without a key, notifications are off.
+    let r = s.http.get(s.url("/api/push/key")).send().await.unwrap();
+    assert_eq!(r.status(), 503);
+    s.app.hub.init_push().await.unwrap();
+    let key: Value = s.http.get(s.url("/api/push/key")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(URL_SAFE_NO_PAD.decode(key["public_key"].as_str().unwrap()).unwrap().len(), 65);
+
+    let (slug, _) = s.create_room("Host").await;
+    let (token, _) = s.join(&slug, "Riky", None).await;
+    let browser = p256::SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let sub = |endpoint: &str| {
+        json!({
+            "subscription": {
+                "endpoint": endpoint,
+                "keys": {
+                    "p256dh": URL_SAFE_NO_PAD.encode(browser.public_key().to_sec1_bytes()),
+                    "auth": URL_SAFE_NO_PAD.encode([1u8; 16]),
+                }
+            },
+            "lang": "id"
+        })
+    };
+    let push_url = s.url(&format!("/api/rooms/{slug}/push"));
+    let r = s
+        .http
+        .post(&push_url)
+        .json(&sub("https://fcm.googleapis.com/fcm/send/abc"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401, "needs a session in the room");
+    let r = s
+        .http
+        .post(&push_url)
+        .bearer_auth(&token)
+        .json(&sub("https://fcm.googleapis.com/fcm/send/abc"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let r = s
+        .http
+        .post(&push_url)
+        .bearer_auth(&token)
+        .json(&sub("https://internal.example/hook"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422, "only browser push services");
+
+    let room = s.app.hub.load(&slug).await.unwrap();
+    let stored = s.app.hub.store.push_subscriptions(room.id).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].1, "id");
+
+    let r = s
+        .http
+        .delete(&push_url)
+        .bearer_auth(&token)
+        .json(&json!({ "endpoint": "https://fcm.googleapis.com/fcm/send/abc" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    assert!(s.app.hub.store.push_subscriptions(room.id).await.unwrap().is_empty());
 }

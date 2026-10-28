@@ -101,6 +101,8 @@ pub enum ClientEvent {
         item_id: Uuid,
         vote: bool,
     },
+    /// Pause, count down 3-2-1 for everyone, then play.
+    StartCountdown,
     Leave,
 }
 
@@ -128,6 +130,7 @@ impl ClientEvent {
             ClientEvent::Kick { .. } => "kick",
             ClientEvent::React { .. } => "react",
             ClientEvent::SkipVote { .. } => "skip_vote",
+            ClientEvent::StartCountdown => "start_countdown",
             ClientEvent::Leave => "leave",
         }
     }
@@ -230,6 +233,13 @@ pub enum ServerEvent {
         voters: Vec<Uuid>,
         /// True when this vote reached the majority and the video was skipped.
         skipped: bool,
+    },
+    /// Playback starts at `start_at` (server ms) unless playback changes
+    /// first (`version` is the paused state the countdown runs from).
+    Countdown {
+        start_at: i64,
+        version: u64,
+        actor_id: Uuid,
     },
     /// Credentials for the SFU call, sent to a participant who joined the call.
     CallToken {

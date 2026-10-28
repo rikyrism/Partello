@@ -88,6 +88,8 @@ pub fn router(app: AppState) -> Router {
         .route("/rooms/{slug}/join", post(rooms::join_room))
         .route("/rooms/{slug}/settings", patch(rooms::update_settings))
         .route("/rooms/{slug}/search", get(rooms::search))
+        .route("/rooms/{slug}/push", post(rooms::subscribe_push).delete(rooms::unsubscribe_push))
+        .route("/push/key", get(rooms::push_key))
         .route("/rooms/{slug}/ws", get(ws_handler))
         .layer(cors(&app));
 
@@ -143,6 +145,6 @@ fn cors(app: &AppState) -> CorsLayer {
         .collect();
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::PATCH])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
 }

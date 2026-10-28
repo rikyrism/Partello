@@ -161,6 +161,60 @@ pub async fn update_settings(
     Ok(Json(room))
 }
 
+#[derive(Serialize)]
+pub struct PushKeyResponse {
+    /// VAPID public key for `PushManager.subscribe({ applicationServerKey })`.
+    pub public_key: String,
+}
+
+pub async fn push_key(State(app): State<AppState>) -> AppResult<Json<PushKeyResponse>> {
+    let public_key = app
+        .hub
+        .push_public_key()
+        .ok_or_else(|| AppError::Unavailable("Notifications aren't set up on this server".into()))?;
+    Ok(Json(PushKeyResponse { public_key }))
+}
+
+#[derive(Deserialize)]
+pub struct SubscribeRequest {
+    pub subscription: crate::push::Subscription,
+    /// Language of the notifications: `en` (default) or `id`.
+    #[serde(default)]
+    pub lang: String,
+}
+
+/// "Tell me when someone starts watching here", for this browser.
+pub async fn subscribe_push(
+    State(app): State<AppState>,
+    Path(slug): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<SubscribeRequest>,
+) -> AppResult<StatusCode> {
+    if !app.limiters.join.check(&ip(&app, &headers, peer)) {
+        return Err(AppError::RateLimited);
+    }
+    let token = bearer(&headers).ok_or(AppError::Unauthorized)?;
+    app.hub.subscribe_push(&slug, token, req.subscription, &req.lang).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct UnsubscribeRequest {
+    pub endpoint: String,
+}
+
+pub async fn unsubscribe_push(
+    State(app): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<UnsubscribeRequest>,
+) -> AppResult<StatusCode> {
+    let token = bearer(&headers).ok_or(AppError::Unauthorized)?;
+    app.hub.unsubscribe_push(&slug, token, &req.endpoint).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 pub struct SearchParams {
     pub q: String,

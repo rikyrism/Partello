@@ -27,11 +27,12 @@ use crate::{
     database::{Store, now_ms},
     error::AppError,
     ice::IceProvider,
+    push::{Delivery, Notice, Pusher, Subscription, Vapid},
     rate_limit::KeyedLimiter,
     room::{
         model::{ChatMessage, ControlMode, QueueMode, RoomInfo, RoomRecord, RoomSettings, VoiceState},
         queue::QueueItem,
-        state::{Effect, Effects, HOST_HANDOFF_MS, RoomLimits, RoomState, SavedState},
+        state::{COUNTDOWN_MS, Effect, Effects, HOST_HANDOFF_MS, RoomLimits, RoomState, SavedState},
     },
     security,
     sfu::Sfu,
@@ -105,6 +106,8 @@ struct LiveInner {
     adds: VecDeque<((Uuid, String), AddState)>,
     /// The video or queue changed since the last save.
     dirty: bool,
+    /// When subscribers were last told someone started watching (ms).
+    last_push: i64,
     room_id: Uuid,
     sfu: Option<Arc<Sfu>>,
 }
@@ -137,6 +140,9 @@ pub struct Hub {
     search: Arc<SearchClient>,
     ice: IceProvider,
     sfu: Option<Arc<Sfu>>,
+    /// Web Push, once its key is loaded (see [`Hub::init_push`]).
+    push: std::sync::OnceLock<Arc<Pusher>>,
+    started_at: i64,
     rooms: Mutex<HashMap<String, Arc<LiveRoom>>>,
     sessions: Mutex<HashMap<Vec<u8>, Session>>,
     load_lock: tokio::sync::Mutex<()>,
@@ -216,6 +222,8 @@ impl Hub {
             search,
             ice: IceProvider::new(config.ice.clone()),
             sfu: config.livekit.clone().map(|lk| Arc::new(Sfu::new(lk))),
+            push: std::sync::OnceLock::new(),
+            started_at: now_ms(),
             config,
             rooms: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
@@ -316,6 +324,7 @@ impl Hub {
                 bans: HashMap::new(),
                 adds: VecDeque::new(),
                 dirty: false,
+                last_push: 0,
                 room_id: record.id,
                 sfu: self.sfu.clone(),
             }),
@@ -469,7 +478,21 @@ impl Hub {
                 // Session outlived the seat (long disconnect, room reloaded): rejoin transparently.
                 inner.state.reserve(pid, session.display_name.clone(), session.is_creator, now)?;
             }
+            let was_quiet = inner.state.connected_count() == 0;
             let effects = inner.state.connect(pid, now)?;
+            let arrived = effects
+                .iter()
+                .any(|e| matches!(e, Effect::BroadcastExcept(_, ServerEvent::ParticipantJoined { .. })));
+            if was_quiet && arrived && self.should_push(&mut inner, now) {
+                let playing = inner.state.playback.item.as_ref().map(|i| i.title.clone());
+                self.notify_room(
+                    inner.room_id,
+                    &room.slug,
+                    inner.state.name.clone(),
+                    session.display_name.clone(),
+                    playing,
+                );
+            }
             inner.empty_since = None;
             let snapshot = encode(&inner.state.snapshot(pid, ice, now));
             // The channel is fresh, so this cannot fail for capacity.
@@ -567,7 +590,10 @@ impl Hub {
     }
 
     /// Applies one client event. Errors are reported back to the sender only.
-    pub async fn handle(&self, room: &LiveRoom, pid: Uuid, event: ClientEvent) -> Result<(), AppError> {
+    pub async fn handle(&self, room: &Arc<LiveRoom>, pid: Uuid, event: ClientEvent) -> Result<(), AppError> {
+        if let ClientEvent::StartCountdown = event {
+            return self.start_countdown(room, pid);
+        }
         if let ClientEvent::QueueAdd { url, nonce } = &event {
             return self.queue_add(room, pid, url, nonce.clone(), false).await;
         }
@@ -624,6 +650,7 @@ impl Hub {
                 | ClientEvent::Leave
                 | ClientEvent::QueueAdd { .. }
                 | ClientEvent::QueueAddPlaylist { .. }
+                | ClientEvent::StartCountdown
                 | ClientEvent::Kick { .. } => Vec::new(),
             };
             inner.dispatch(effects)
@@ -634,6 +661,24 @@ impl Hub {
                 tracing::warn!(room = %room.slug, error = %err, "failed to persist chat message");
             }
         }
+        Ok(())
+    }
+
+    /// Pauses, shows everyone 3-2-1, then plays from the same spot.
+    fn start_countdown(&self, room: &Arc<LiveRoom>, pid: Uuid) -> Result<(), AppError> {
+        let version = {
+            let mut inner = room.inner.lock().unwrap();
+            let (effects, version) = inner.state.start_countdown(pid, now_ms())?;
+            inner.dispatch(effects);
+            version
+        };
+        let room = room.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(COUNTDOWN_MS as u64)).await;
+            let mut inner = room.inner.lock().unwrap();
+            let effects = inner.state.finish_countdown(version, now_ms());
+            inner.dispatch(effects);
+        });
         Ok(())
     }
 
@@ -756,6 +801,86 @@ impl Hub {
         drop(inner);
         finish(room, true);
         Ok(())
+    }
+
+    // ------------------------------------------------------------ push notifications
+
+    /// Loads (or creates once and stores) the VAPID key push subscriptions are tied to.
+    pub async fn init_push(&self) -> Result<(), AppError> {
+        let stored = match &self.config.vapid_private_key {
+            Some(key) => key.clone(),
+            None => {
+                let (_, fresh) = Vapid::from_private(None, String::new())?;
+                self.store.setting_or_insert("vapid_private_key", &fresh).await?
+            }
+        };
+        let (vapid, _) = Vapid::from_private(Some(&stored), self.config.vapid_subject.clone())?;
+        let _ = self.push.set(Arc::new(Pusher::new(vapid)));
+        Ok(())
+    }
+
+    pub fn push_public_key(&self) -> Option<String> {
+        self.push.get().map(|p| p.vapid.public_key.clone())
+    }
+
+    pub async fn subscribe_push(&self, slug: &str, token: &str, sub: Subscription, lang: &str) -> Result<(), AppError> {
+        self.authenticate(slug, token)?;
+        if self.push.get().is_none() {
+            return Err(AppError::Unavailable("Notifications aren't set up on this server".into()));
+        }
+        sub.validate()?;
+        let room = self.load(slug).await?;
+        let lang = if lang == "id" { "id" } else { "en" };
+        self.store.add_push(room.id, &sub, lang).await?;
+        Ok(())
+    }
+
+    pub async fn unsubscribe_push(&self, slug: &str, token: &str, endpoint: &str) -> Result<(), AppError> {
+        self.authenticate(slug, token)?;
+        let room = self.load(slug).await?;
+        self.store.remove_push(room.id, endpoint).await?;
+        Ok(())
+    }
+
+    /// At most one "someone started watching" per room every 10 minutes, and
+    /// none right after this server started (everyone is reconnecting then).
+    fn should_push(&self, inner: &mut LiveInner, now: i64) -> bool {
+        const EVERY_MS: i64 = 10 * 60 * 1000;
+        const STARTUP_QUIET_MS: i64 = 2 * 60 * 1000;
+        if self.push.get().is_none() || now - self.started_at < STARTUP_QUIET_MS || now - inner.last_push < EVERY_MS {
+            return false;
+        }
+        inner.last_push = now;
+        true
+    }
+
+    fn notify_room(&self, room_id: Uuid, slug: &str, room_name: String, who: String, playing: Option<String>) {
+        let Some(pusher) = self.push.get().cloned() else {
+            return;
+        };
+        let store = self.store.clone();
+        let slug = slug.to_string();
+        tokio::spawn(async move {
+            let subs = match store.push_subscriptions(room_id).await {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not load push subscriptions");
+                    return;
+                }
+            };
+            let mut sent = 0;
+            for (sub, lang) in subs {
+                let notice = started_notice(&slug, &room_name, &who, playing.as_deref(), &lang);
+                match pusher.send(&sub, &notice).await {
+                    Delivery::Sent => sent += 1,
+                    Delivery::Gone => {
+                        let _ = store.remove_push(room_id, &sub.endpoint).await;
+                    }
+                    Delivery::Failed => {}
+                }
+            }
+            tracing::info!(room = %slug, sent, "room start notifications sent");
+        });
     }
 
     // ------------------------------------------------------------ host actions over REST
@@ -956,4 +1081,43 @@ pub struct ApiRoomStatus {
     pub status: crate::room::playback::PlayStatus,
     pub position: f64,
     pub queue: Vec<QueueItem>,
+}
+
+/// "Riky started watching" in the subscriber's language.
+fn started_notice(slug: &str, room_name: &str, who: &str, playing: Option<&str>, lang: &str) -> Notice {
+    // Video titles carry " | Official Trailer | Channel"; keep the first part.
+    let title = playing.map(|t| t.split('|').next().unwrap_or(t).trim().to_string());
+    let body = match (lang, title) {
+        ("id", Some(t)) => format!("{who} sedang nonton {t}. Ketuk untuk gabung."),
+        ("id", None) => format!("{who} mulai nonton bareng. Ketuk untuk gabung."),
+        (_, Some(t)) => format!("{who} is watching {t}. Tap to join."),
+        (_, None) => format!("{who} started a watch party. Tap to join."),
+    };
+    Notice {
+        title: room_name.to_string(),
+        body,
+        url: format!("/r/{slug}"),
+        tag: format!("room-{slug}"),
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn notices_speak_the_subscribers_language() {
+        let n = started_notice(
+            "k7Qm2xPa9Rt4",
+            "Friday night",
+            "Riky",
+            Some("Wildwood | Official Trailer | Studio"),
+            "id",
+        );
+        assert_eq!(n.title, "Friday night");
+        assert_eq!(n.body, "Riky sedang nonton Wildwood. Ketuk untuk gabung.");
+        assert_eq!(n.url, "/r/k7Qm2xPa9Rt4");
+        let n = started_notice("k7Qm2xPa9Rt4", "Friday night", "Riky", None, "en");
+        assert_eq!(n.body, "Riky started a watch party. Tap to join.");
+    }
 }

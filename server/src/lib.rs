@@ -6,6 +6,7 @@ pub mod database;
 pub mod error;
 pub mod ice;
 pub mod observability;
+pub mod push;
 pub mod rate_limit;
 pub mod realtime;
 pub mod room;

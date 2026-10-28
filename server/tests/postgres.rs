@@ -90,6 +90,25 @@ async fn rooms_chat_and_keys_round_trip() {
     let saved: serde_json::Value = serde_json::from_str(&store.room_state(room.id).await.unwrap().unwrap()).unwrap();
     assert_eq!(saved["saved_at"], 1);
 
+    // Server settings keep the first value written.
+    let first = store.setting_or_insert("test_key", &format!("a-{}", room.id)).await.unwrap();
+    assert_eq!(store.setting_or_insert("test_key", "b").await.unwrap(), first);
+
+    let sub = partello::push::Subscription {
+        endpoint: format!("https://fcm.googleapis.com/fcm/send/{}", room.id),
+        keys: partello::push::SubscriptionKeys {
+            p256dh: "BPub".into(),
+            auth: "auth".into(),
+        },
+    };
+    store.add_push(room.id, &sub, "id").await.unwrap();
+    store.add_push(room.id, &sub, "en").await.unwrap();
+    let subs = store.push_subscriptions(room.id).await.unwrap();
+    assert_eq!(subs.len(), 1, "re-subscribing updates in place");
+    assert_eq!(subs[0].1, "en");
+    store.remove_push(room.id, &sub.endpoint).await.unwrap();
+    assert!(store.push_subscriptions(room.id).await.unwrap().is_empty());
+
     let key = ApiKeyRecord {
         id: Uuid::new_v4(),
         label: "bot".into(),

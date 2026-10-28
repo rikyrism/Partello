@@ -49,6 +49,9 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+p256 = { version = "0.14", features = ["ecdh", "ecdsa"] }
+hkdf = "0.13"
+aes-gcm = "0.11"
 
 [dev-dependencies]
 tokio-tungstenite = "0.30"

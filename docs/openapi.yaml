@@ -262,6 +262,74 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
 
+  /api/push/key:
+    get:
+      tags: [Rooms]
+      summary: VAPID public key for Web Push subscriptions
+      responses:
+        '200':
+          description: Use as `applicationServerKey` in `PushManager.subscribe`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  public_key: { type: string, description: Uncompressed P-256 public key, base64url. }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /api/rooms/{slug}/push:
+    parameters: [{ $ref: '#/components/parameters/slug' }]
+    post:
+      tags: [Rooms]
+      summary: Notify this browser when someone starts watching in the room
+      description: >
+        Stores a Web Push subscription for the room. Only endpoints at browser push services
+        (FCM, Mozilla, Apple, Windows) are accepted. At most one notification per room every
+        10 minutes, written in `lang`.
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscription]
+              properties:
+                subscription:
+                  type: object
+                  description: The result of `PushSubscription.toJSON()`.
+                  required: [endpoint, keys]
+                  properties:
+                    endpoint: { type: string, format: uri }
+                    keys:
+                      type: object
+                      required: [p256dh, auth]
+                      properties:
+                        p256dh: { type: string }
+                        auth: { type: string }
+                lang: { type: string, enum: [en, id], default: en }
+      responses:
+        '204': { description: Subscribed }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Rooms]
+      summary: Stop notifications for this browser
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint: { type: string }
+      responses:
+        '204': { description: Unsubscribed }
+        '401': { $ref: '#/components/responses/Error' }
+
   /api/rooms/{slug}/ws:
     parameters: [{ $ref: '#/components/parameters/slug' }]
     get:

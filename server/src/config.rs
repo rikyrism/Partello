@@ -32,6 +32,11 @@ pub struct Config {
     pub youtube_search_daily_budget: u32,
     /// LiveKit SFU for calls; `None` keeps the peer-to-peer mesh.
     pub livekit: Option<LiveKitConfig>,
+    /// Web Push key (base64url P-256 scalar). Generated and kept in the
+    /// database when unset.
+    pub vapid_private_key: Option<String>,
+    /// Contact push services may use (`mailto:` or `https:` URL).
+    pub vapid_subject: String,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +188,8 @@ impl Config {
             youtube_api_key: env::var("YOUTUBE_API_KEY").ok().filter(|s| !s.is_empty()),
             youtube_search_daily_budget: parse_or("YOUTUBE_SEARCH_DAILY_BUDGET", 90)?,
             livekit,
+            vapid_private_key: non_empty("VAPID_PRIVATE_KEY"),
+            vapid_subject: non_empty("VAPID_SUBJECT").unwrap_or_else(|| default_vapid_subject(&public_base_url)),
         })
     }
 
@@ -214,6 +221,8 @@ impl Config {
             youtube_api_key: None,
             youtube_search_daily_budget: 90,
             livekit: None,
+            vapid_private_key: None,
+            vapid_subject: "mailto:push@example.org".into(),
         }
     }
 
@@ -245,6 +254,15 @@ impl IceConfig {
         } else {
             "none"
         }
+    }
+}
+
+/// Push services want a way to reach the operator; the public site works.
+fn default_vapid_subject(public_base_url: &str) -> String {
+    if public_base_url.starts_with("https://") {
+        public_base_url.trim_end_matches('/').to_string()
+    } else {
+        "mailto:push@example.org".into()
     }
 }
 

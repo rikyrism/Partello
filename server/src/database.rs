@@ -11,7 +11,13 @@ use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::room::model::{ChatMessage, ControlMode, QueueMode, ReplyRef, RoomRecord, RoomSettings};
+use crate::{
+    push::{Subscription, SubscriptionKeys},
+    room::model::{ChatMessage, ControlMode, QueueMode, ReplyRef, RoomRecord, RoomSettings},
+};
+
+/// Push subscriptions kept per room; the oldest go first beyond this.
+pub const MAX_PUSH_PER_ROOM: i64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct ApiKeyRecord {
@@ -30,6 +36,8 @@ pub enum Store {
 pub struct MemData {
     rooms: HashMap<String, (RoomRecord, i64)>,
     saved_state: HashMap<Uuid, String>,
+    settings: HashMap<String, String>,
+    push: Vec<(Uuid, Subscription, String)>,
     chat: Vec<(Uuid, ChatMessage)>,
     api_keys: Vec<(ApiKeyRecord, Vec<u8>)>,
 }
@@ -192,6 +200,131 @@ impl Store {
         }
     }
 
+    pub async fn setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                let row = sqlx::query("SELECT value FROM server_settings WHERE key = $1")
+                    .bind(key)
+                    .fetch_optional(pool)
+                    .await?;
+                row.map(|r| r.try_get("value")).transpose()
+            }
+            Store::Memory(m) => Ok(m.lock().unwrap().settings.get(key).cloned()),
+        }
+    }
+
+    /// Stores `value` unless the key exists; returns the value that won, so
+    /// two servers starting together agree on one.
+    pub async fn setting_or_insert(&self, key: &str, value: &str) -> Result<String, sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                sqlx::query("INSERT INTO server_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
+                    .bind(key)
+                    .bind(value)
+                    .execute(pool)
+                    .await?;
+                Ok(self.setting(key).await?.unwrap_or_else(|| value.to_string()))
+            }
+            Store::Memory(m) => Ok(m
+                .lock()
+                .unwrap()
+                .settings
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string())
+                .clone()),
+        }
+    }
+
+    pub async fn add_push(&self, room_id: Uuid, sub: &Subscription, lang: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                sqlx::query(
+                    "INSERT INTO push_subscriptions (id, room_id, endpoint, p256dh, auth, lang) VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (room_id, endpoint) DO UPDATE SET p256dh = $4, auth = $5, lang = $6",
+                )
+                .bind(Uuid::new_v4())
+                .bind(room_id)
+                .bind(&sub.endpoint)
+                .bind(&sub.keys.p256dh)
+                .bind(&sub.keys.auth)
+                .bind(lang)
+                .execute(pool)
+                .await?;
+                sqlx::query(
+                    "DELETE FROM push_subscriptions WHERE room_id = $1 AND id NOT IN
+                     (SELECT id FROM push_subscriptions WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2)",
+                )
+                .bind(room_id)
+                .bind(MAX_PUSH_PER_ROOM)
+                .execute(pool)
+                .await?;
+            }
+            Store::Memory(m) => {
+                let mut m = m.lock().unwrap();
+                m.push.retain(|(r, s, _)| !(*r == room_id && s.endpoint == sub.endpoint));
+                m.push.push((room_id, sub.clone(), lang.to_string()));
+                let mine = m.push.iter().filter(|(r, _, _)| *r == room_id).count() as i64;
+                if mine > MAX_PUSH_PER_ROOM {
+                    let pos = m.push.iter().position(|(r, _, _)| *r == room_id).unwrap();
+                    m.push.remove(pos);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn remove_push(&self, room_id: Uuid, endpoint: &str) -> Result<(), sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                sqlx::query("DELETE FROM push_subscriptions WHERE room_id = $1 AND endpoint = $2")
+                    .bind(room_id)
+                    .bind(endpoint)
+                    .execute(pool)
+                    .await?;
+            }
+            Store::Memory(m) => m
+                .lock()
+                .unwrap()
+                .push
+                .retain(|(r, s, _)| !(*r == room_id && s.endpoint == endpoint)),
+        }
+        Ok(())
+    }
+
+    /// Subscriptions of a room with their language.
+    pub async fn push_subscriptions(&self, room_id: Uuid) -> Result<Vec<(Subscription, String)>, sqlx::Error> {
+        match self {
+            Store::Postgres(pool) => {
+                let rows = sqlx::query("SELECT endpoint, p256dh, auth, lang FROM push_subscriptions WHERE room_id = $1")
+                    .bind(room_id)
+                    .fetch_all(pool)
+                    .await?;
+                rows.into_iter()
+                    .map(|r| {
+                        Ok((
+                            Subscription {
+                                endpoint: r.try_get("endpoint")?,
+                                keys: SubscriptionKeys {
+                                    p256dh: r.try_get("p256dh")?,
+                                    auth: r.try_get("auth")?,
+                                },
+                            },
+                            r.try_get("lang")?,
+                        ))
+                    })
+                    .collect()
+            }
+            Store::Memory(m) => Ok(m
+                .lock()
+                .unwrap()
+                .push
+                .iter()
+                .filter(|(r, _, _)| *r == room_id)
+                .map(|(_, s, l)| (s.clone(), l.clone()))
+                .collect()),
+        }
+    }
+
     pub async fn touch_rooms(&self, ids: &[Uuid]) -> Result<(), sqlx::Error> {
         if ids.is_empty() {
             return Ok(());
@@ -292,6 +425,7 @@ impl Store {
                 m.rooms.retain(|_, (r, active)| r.settings.permanent || *active >= cutoff_ms);
                 let alive: Vec<Uuid> = m.rooms.values().map(|(r, _)| r.id).collect();
                 m.chat.retain(|(room, _)| alive.contains(room));
+                m.push.retain(|(room, _, _)| alive.contains(room));
                 Ok((before - m.rooms.len()) as u64)
             }
         }

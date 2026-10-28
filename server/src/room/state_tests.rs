@@ -491,3 +491,34 @@ fn permanent_is_a_host_setting() {
     r.update_settings(host, None, None, None, Some(true), None).unwrap();
     assert!(r.info().settings.permanent);
 }
+
+#[test]
+fn countdown_pauses_then_plays_from_the_same_spot() {
+    let mut r = room(4);
+    let host = join(&mut r, "Host", true);
+    let guest = join(&mut r, "Guest", false);
+    assert!(r.start_countdown(host, 0).is_err(), "nothing to play");
+    r.queue_add(host, item(1, host), 0).unwrap();
+    assert!(r.start_countdown(guest, 1_000).is_err(), "host-only room");
+
+    let (fx, version) = r.start_countdown(host, 10_000).unwrap();
+    assert_eq!(kinds(&fx), ["playback_changed", "other"]);
+    assert_eq!(r.playback.status, PlayStatus::Paused);
+    assert_eq!(r.playback.position, 10.0);
+    let fx = r.finish_countdown(version, 13_000);
+    assert_eq!(kinds(&fx), ["playback_changed"]);
+    assert_eq!(r.playback.status, PlayStatus::Playing);
+    assert_eq!(r.playback.position_at(14_000), 11.0);
+}
+
+#[test]
+fn a_change_during_the_countdown_cancels_it() {
+    let mut r = room(4);
+    let host = join(&mut r, "Host", true);
+    r.queue_add(host, item(1, host), 0).unwrap();
+    let (_, version) = r.start_countdown(host, 5_000).unwrap();
+    r.playback_control(host, PlaybackAction::Seek, 60.0, 6_000).unwrap();
+    assert!(r.finish_countdown(version, 8_000).is_empty());
+    assert_eq!(r.playback.status, PlayStatus::Paused);
+    assert_eq!(r.playback.position, 60.0);
+}

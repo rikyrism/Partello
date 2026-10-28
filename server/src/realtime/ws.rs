@@ -128,7 +128,7 @@ impl Limits {
             | ClientEvent::QueueRemove { .. }
             | ClientEvent::QueueMove { .. } => self.queue.try_take(),
             ClientEvent::React { .. } => self.react.try_take(),
-            ClientEvent::SkipVote { .. } => self.playback.try_take(),
+            ClientEvent::SkipVote { .. } | ClientEvent::StartCountdown => self.playback.try_take(),
             ClientEvent::PlaybackControl { .. } | ClientEvent::QueuePlay { .. } | ClientEvent::QueueSkip => self.playback.try_take(),
             _ => true,
         }

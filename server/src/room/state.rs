@@ -48,6 +48,8 @@ pub const HOST_HANDOFF_MS: i64 = 10_000;
 /// After a restart, a video that was playing keeps playing if the server was
 /// back within this window (everyone's players kept running meanwhile).
 pub const RESUME_WINDOW_MS: i64 = 2 * 60 * 1000;
+/// Length of the 3-2-1 before a synchronized start.
+pub const COUNTDOWN_MS: i64 = 3_000;
 /// Longest quoted excerpt in a reply.
 const REPLY_EXCERPT_CHARS: usize = 140;
 
@@ -163,6 +165,11 @@ impl RoomState {
     /// Seats taken, including reservations that have not connected yet.
     pub fn occupancy(&self) -> usize {
         self.members.len()
+    }
+
+    /// People here with a live connection right now.
+    pub fn connected_count(&self) -> usize {
+        self.members.iter().filter(|m| m.announced && m.info.connected).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -612,6 +619,40 @@ impl RoomState {
             return Err(AppError::Conflict("Nothing is playing yet. Add a video first".into()));
         }
         Ok(vec![self.playback_changed(Some(actor), now)])
+    }
+
+    /// Pauses where the video is and announces a start in [`COUNTDOWN_MS`].
+    /// Returns the effects and the playback version the countdown belongs to.
+    pub fn start_countdown(&mut self, actor: Uuid, now: i64) -> Result<(Effects, u64), AppError> {
+        self.require_control(actor)?;
+        if !matches!(self.playback.status, PlayStatus::Playing | PlayStatus::Paused) {
+            return Err(AppError::Conflict("Nothing is playing yet. Add a video first".into()));
+        }
+        let position = self.playback.position_at(now);
+        self.playback.pause(position, now);
+        let version = self.playback.version;
+        Ok((
+            vec![
+                self.playback_changed(Some(actor), now),
+                Effect::Broadcast(ServerEvent::Countdown {
+                    start_at: now + COUNTDOWN_MS,
+                    version,
+                    actor_id: actor,
+                }),
+            ],
+            version,
+        ))
+    }
+
+    /// The countdown ended: play, unless someone paused, seeked or changed
+    /// the video meanwhile.
+    pub fn finish_countdown(&mut self, version: u64, now: i64) -> Effects {
+        if self.playback.version != version || self.playback.status != PlayStatus::Paused {
+            return Vec::new();
+        }
+        let position = self.playback.position;
+        self.playback.play(position, now);
+        vec![self.playback_changed(None, now)]
     }
 
     /// Only people who may control playback report the duration: it bounds every
