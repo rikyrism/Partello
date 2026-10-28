@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { Link2, Lock, LogOut, MessageSquare, ListVideo, Settings, Users } from 'lucide-react'
 import { useController, useRoom, useSelf } from '../room/context'
@@ -8,6 +8,8 @@ import { QueuePanel } from '../features/queue/QueuePanel'
 import { PeoplePanel } from '../features/people/PeoplePanel'
 import { CallControls, CallStage } from '../features/call/CallStage'
 import { ReactionBar } from '../features/reactions/Reactions'
+import { TheaterOverlay } from '../features/theater/TheaterOverlay'
+import { NotifyButton } from '../features/notify/NotifyButton'
 import { useChatNotifications } from '../features/chat/useChatNotifications'
 import { useCall } from '../features/call/CallProvider'
 import { Button, IconButton } from '../components/Button'
@@ -31,6 +33,7 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
   const unread = useUnread(tab === 'chat')
   useChatNotifications(tab === 'chat')
   const queueLen = useRoom((s) => s.queue.length)
+  const [theaterRef, theaterOn, toggleTheater] = useTheater()
   const people = useRoom((s) => s.participants.length)
 
   useEffect(() => {
@@ -50,10 +53,19 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
       <RoomHeader onLeave={leave} />
       <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
         <main className="flex shrink-0 flex-col lg:min-h-0 lg:shrink lg:overflow-y-auto lg:scrollbar-thin">
-          <div className="bg-night">
+          <div
+            ref={theaterRef}
+            className={cx(theaterOn ? 'fixed inset-0 z-50 flex flex-col bg-black' : 'bg-night')}
+            onKeyDown={(e) => e.key === 'Escape' && theaterOn && toggleTheater()}
+          >
             {/* Keep the whole player plus controls on screen on short, wide displays. */}
-            <div className="mx-auto w-full lg:max-w-[calc((100dvh-11.5rem)*16/9)]">
-              <SyncedPlayer />
+            <div className={cx(theaterOn ? 'flex min-h-0 w-full flex-1 flex-col' : 'mx-auto w-full lg:max-w-[calc((100dvh-11.5rem)*16/9)]')}>
+              <SyncedPlayer
+                fill={theaterOn}
+                theater={theaterOn}
+                onToggleTheater={toggleTheater}
+                overlay={theaterOn ? <TheaterOverlay /> : null}
+              />
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 bg-night-2 px-2 py-2 sm:px-3">
@@ -93,6 +105,37 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
       </div>
     </div>
   )
+}
+
+/**
+ * Theater mode: the player area goes full screen with chat and reactions
+ * over the video. Uses the Fullscreen API where it exists, and a fixed
+ * full-window layout where it doesn't (iPhone).
+ */
+function useTheater() {
+  const ref = useRef<HTMLDivElement>(null)
+  const [on, setOn] = useState(false)
+
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement) setOn(false)
+    }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  const toggle = useCallback(() => {
+    if (on) {
+      setOn(false)
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+      return
+    }
+    setOn(true)
+    const el = ref.current
+    if (el?.requestFullscreen) void el.requestFullscreen({ navigationUI: 'hide' }).catch(() => undefined)
+  }, [on])
+
+  return [ref, on, toggle] as const
 }
 
 /** Messages that arrived while the chat tab was hidden. */
@@ -182,6 +225,7 @@ function RoomHeader({ onLeave }: { onLeave: () => void }) {
       </div>
       <LanguageSwitch className="hidden sm:flex" />
       <InviteButton />
+      <NotifyButton />
       {self?.is_host && (
         <IconButton label={t('Room settings')} onClick={() => setSettingsOpen(true)}>
           <Settings className="size-[18px]" />

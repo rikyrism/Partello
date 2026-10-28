@@ -90,6 +90,22 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
+  pushKey: () => request<{ public_key: string }>('/api/push/key'),
+
+  subscribePush: (slug: string, token: string, subscription: PushSubscriptionJSON, lang: string) =>
+    request<null>(`/api/rooms/${encodeURIComponent(slug)}/push`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ subscription, lang }),
+    }),
+
+  unsubscribePush: (slug: string, token: string, endpoint: string) =>
+    request<null>(`/api/rooms/${encodeURIComponent(slug)}/push`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ endpoint }),
+    }),
+
   search: (slug: string, token: string, q: string, signal?: AbortSignal) =>
     request<{ results: SearchResult[] }>(`/api/rooms/${encodeURIComponent(slug)}/search?q=${encodeURIComponent(q)}`, {
       headers: { Authorization: `Bearer ${token}` },

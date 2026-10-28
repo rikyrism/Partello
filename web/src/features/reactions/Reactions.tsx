@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { Pin } from 'lucide-react'
+import { expectedPosition } from '../player/syncMath'
 import { useController, useRoom } from '../../room/context'
 import { REACTIONS } from '../../realtime/protocol'
-import { cx } from '../../lib/format'
+import { cx, formatTime } from '../../lib/format'
 import { useT } from '../../i18n'
 
 interface Floating {
@@ -63,6 +65,14 @@ export function ReactionBar({ className }: { className?: string }) {
   const t = useT()
   const ctrl = useController()
   const connected = useRoom((s) => s.status === 'open')
+  const hasVideo = useRoom((s) => s.playback?.status === 'playing' || s.playback?.status === 'paused')
+
+  // Posts "📌 12:45" in the chat; anyone who controls playback can click it.
+  const mark = () => {
+    const playback = ctrl.store.getState().playback
+    if (playback) ctrl.sendChat(`📌 ${formatTime(expectedPosition(playback, ctrl.clock.now()))}`)
+  }
+
   return (
     <div role="group" aria-label={t('React')} className={cx('flex items-center', className)}>
       {REACTIONS.map((emoji) => (
@@ -77,6 +87,16 @@ export function ReactionBar({ className }: { className?: string }) {
           {emoji}
         </button>
       ))}
+      <button
+        type="button"
+        disabled={!connected || !hasVideo}
+        onClick={mark}
+        aria-label={t('Mark this moment in the chat')}
+        title={t('Mark this moment in the chat')}
+        className="grid size-9 place-items-center text-haze transition-colors hover:text-fog focus-visible:outline-2 focus-visible:outline-biro-bright disabled:opacity-40"
+      >
+        <Pin className="size-4" aria-hidden="true" />
+      </button>
     </div>
   )
 }

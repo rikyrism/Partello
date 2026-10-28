@@ -4,6 +4,7 @@ import { storage } from '../../lib/storage'
 import { audioContext } from '../call/speaking'
 import { mentions } from './mentions'
 import { playChatSound } from './sounds'
+import { notifyLocally } from '../../lib/pwa'
 
 /**
  * Sounds for chat: always when someone mentions you or replies to you, and
@@ -34,8 +35,11 @@ export function useChatNotifications(chatVisible: boolean): void {
         const state = ctrl.store.getState()
         const self = state.participants.find((p) => p.id === state.selfId)
         const forMe = !!self && (mentions(message.body, self.display_name) || message.reply_to?.participant_id === self.id)
-        if (forMe) playChatSound('mention')
-        else if (document.hidden || !visibleRef.current) playChatSound('message')
+        if (forMe) {
+          playChatSound('mention')
+          // In another tab or app: a system notification, if allowed earlier.
+          if (document.hidden) void notifyLocally(state.room?.name ?? 'Partello', `${message.display_name}: ${message.body}`, `mention-${message.id}`)
+        } else if (document.hidden || !visibleRef.current) playChatSound('message')
       }),
     [ctrl],
   )

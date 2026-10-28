@@ -128,6 +128,7 @@ export type ServerEvent =
   | { type: 'reaction'; participant_id: string; emoji: string }
   | { type: 'skip_votes'; item_id: string; voters: string[]; skipped: boolean }
   | { type: 'call_token'; url: string; token: string }
+  | { type: 'countdown'; start_at: number; version: number; actor_id: string }
   | { type: 'pong'; t: number; server_time: number }
   | { type: 'error'; code: string; message: string; nonce?: string }
 
@@ -154,6 +155,7 @@ export type ClientEvent =
   | { type: 'kick'; participant_id: string }
   | { type: 'react'; emoji: string }
   | { type: 'skip_vote'; item_id: string; vote: boolean }
+  | { type: 'start_countdown' }
   | { type: 'leave' }
 
 /** Application close codes sent by the server. */

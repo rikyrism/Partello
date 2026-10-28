@@ -46,6 +46,8 @@ export interface RoomState {
   limits: Limits | null
   /** Who voted to skip the current video. */
   skipVotes: string[]
+  /** A 3-2-1 in progress: playback starts at `startAt` (server ms) unless it changes first. */
+  countdown: { startAt: number; version: number } | null
 }
 
 export const initialRoomState: RoomState = {
@@ -60,6 +62,7 @@ export const initialRoomState: RoomState = {
   iceServers: [],
   limits: null,
   skipVotes: [],
+  countdown: null,
 }
 
 const CHAT_KEEP = 300
@@ -150,6 +153,7 @@ function applyServer(state: RoomState, ev: ServerEvent, at: number): RoomState {
         iceServers: ev.ice_servers,
         limits: ev.limits,
         skipVotes: ev.skip_votes ?? [],
+        countdown: null,
       }
     }
 
@@ -191,8 +195,14 @@ function applyServer(state: RoomState, ev: ServerEvent, at: number): RoomState {
       if (state.playback && ev.playback.version < state.playback.version) return state
       // Votes belong to one video.
       const sameItem = state.playback?.item?.id === ev.playback.item?.id
-      return { ...state, playback: ev.playback, skipVotes: sameItem ? state.skipVotes : [] }
+      // Any newer playback state ends a countdown (it started, or was cancelled).
+      const countdown = state.countdown && ev.playback.version > state.countdown.version ? null : state.countdown
+      return { ...state, playback: ev.playback, skipVotes: sameItem ? state.skipVotes : [], countdown }
     }
+
+    case 'countdown':
+      if (state.playback && state.playback.version !== ev.version) return state
+      return { ...state, countdown: { startAt: ev.start_at, version: ev.version } }
 
     case 'skip_votes': {
       if (state.playback?.item?.id !== ev.item_id) return state

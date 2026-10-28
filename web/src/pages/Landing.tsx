@@ -7,6 +7,7 @@ import { useReveal } from './landing/useReveal'
 import { GenreGrid } from './landing/GenreGrid'
 import { useT } from '../i18n'
 import { LanguageSwitch } from '../i18n/LanguageSwitch'
+import { InstallButton } from '../components/InstallButton'
 
 export function Landing() {
   const t = useT()
@@ -30,6 +31,7 @@ export function Landing() {
           <Link to="/developers" className="hidden hover:underline md:inline">
             {t('Developers')}
           </Link>
+          <InstallButton />
           <LanguageSwitch />
           <a href="#top" className="inline-flex h-9 items-center bg-biro px-3 font-medium text-white hover:bg-biro-deep">
             {t('Create a room')}

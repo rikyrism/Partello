@@ -2,13 +2,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { ArrowDown, Bell, BellOff, CornerUpLeft, RotateCcw, SendHorizontal, X } from 'lucide-react'
 import { Avatar } from '../../components/Avatar'
 import { IconButton } from '../../components/Button'
-import { useController, useRoom } from '../../room/context'
+import { useCanControl, useController, useRoom } from '../../room/context'
 import type { ChatEntry, MessageEntry } from '../../room/store'
 import type { ChatMessage, Participant } from '../../realtime/protocol'
-import { cx, formatClock } from '../../lib/format'
+import { cx, formatClock, formatTime } from '../../lib/format'
 import { storage } from '../../lib/storage'
 import { useT } from '../../i18n'
 import { mentionQuery, mentions, splitMentions } from './mentions'
+import { splitTimestamps } from './timestamps'
 
 const GROUP_WINDOW_MS = 3 * 60_000
 
@@ -181,7 +182,7 @@ const ChatRow = memo(function ChatRow({
                 {seg.text}
               </span>
             ) : (
-              seg.text
+              <WithTimestamps key={i} text={seg.text} />
             ),
           )}
         </p>
@@ -200,6 +201,43 @@ const ChatRow = memo(function ChatRow({
     </li>
   )
 })
+
+/** Times like 12:45 jump the room there (for people who control playback). */
+function WithTimestamps({ text }: { text: string }) {
+  const parts = splitTimestamps(text)
+  if (parts.length === 1 && parts[0]!.seconds === undefined) return <>{text}</>
+  return (
+    <>
+      {parts.map((p, i) => (p.seconds === undefined ? p.text : <TimeLink key={i} text={p.text} seconds={p.seconds} />))}
+    </>
+  )
+}
+
+function TimeLink({ text, seconds }: { text: string; seconds: number }) {
+  const t = useT()
+  const ctrl = useController()
+  const canControl = useCanControl()
+  const hasVideo = useRoom((s) => s.playback?.status === 'playing' || s.playback?.status === 'paused')
+  const duration = useRoom((s) => s.playback?.duration ?? null)
+  if (!hasVideo || (duration != null && seconds > duration)) return <>{text}</>
+  if (!canControl) {
+    return (
+      <span className="font-medium text-biro-bright" title={t('Only the host can jump to {time}', { time: formatTime(seconds) })}>
+        {text}
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => ctrl.control('seek', seconds)}
+      className="font-medium text-biro-bright underline decoration-biro-bright/50 underline-offset-2 hover:decoration-biro-bright"
+      aria-label={t('Jump everyone to {time}', { time: formatTime(seconds) })}
+    >
+      {text}
+    </button>
+  )
+}
 
 function Quote({ reply, selfId }: { reply: NonNullable<ChatMessage['reply_to']>; selfId: string | null }) {
   const t = useT()

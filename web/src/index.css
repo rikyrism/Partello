@@ -201,6 +201,22 @@
   animation: pop-in 0.22s var(--ease-out-soft) both;
 }
 
+/* 3-2-1 before a synchronized start: each number lands, then settles. */
+@keyframes countdown-pop {
+  from {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.countdown-pop {
+  animation: countdown-pop 0.35s var(--ease-out-soft) both;
+}
+
 /* Emoji reactions drift up over the video and fade out. */
 @keyframes reaction-float {
   0% {

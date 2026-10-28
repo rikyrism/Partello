@@ -238,6 +238,11 @@ export class RoomController {
     this.send({ type: 'skip_vote', item_id: itemId, vote })
   }
 
+  /** Pause, count down 3-2-1 for everyone, then play. */
+  startCountdown(): void {
+    this.send({ type: 'start_countdown' })
+  }
+
   react(emoji: string): void {
     this.send({ type: 'react', emoji })
   }

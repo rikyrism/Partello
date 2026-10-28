@@ -532,4 +532,28 @@ export const id: Record<string, string> = {
   "Couldn't load the call. Check your connection and try again.": 'Call gagal dimuat. Periksa koneksi Anda lalu coba lagi.',
   'The call disconnected. Join again to keep talking.': 'Call terputus. Gabung lagi untuk lanjut ngobrol.',
   "Couldn't connect to the call server. Try again in a moment.": 'Tidak bisa terhubung ke server call. Coba lagi sebentar lagi.',
+
+  // ---- theater mode, timestamps, countdown, install and notifications
+  'Theater mode: full screen with chat': 'Mode bioskop: layar penuh dengan chat',
+  'Exit theater mode': 'Keluar dari mode bioskop',
+  'Recent messages': 'Pesan terbaru',
+  'Hide chat': 'Sembunyikan chat',
+  'Show chat': 'Tampilkan chat',
+  'Jump everyone to {time}': 'Loncatkan semua orang ke {time}',
+  'Only the host can jump to {time}': 'Hanya host yang bisa loncat ke {time}',
+  'Mark this moment in the chat': 'Tandai momen ini di chat',
+  'Start together: count down 3-2-1 for everyone': 'Mulai bareng: hitung mundur 3-2-1 untuk semua orang',
+  'Go!': 'Mulai!',
+  'Install app': 'Pasang aplikasi',
+  'Notify me when someone starts watching here': 'Beri tahu saya saat ada yang mulai nonton di sini',
+  'Stop notifications for this room': 'Matikan notifikasi untuk room ini',
+  "We'll let you know when someone starts watching here": 'Kami akan memberi tahu Anda saat ada yang mulai nonton di sini',
+  'Notifications for this room are off': 'Notifikasi untuk room ini dimatikan',
+  'Notifications are blocked. Allow them in your browser settings for this site.': 'Notifikasi diblokir. Izinkan di pengaturan browser untuk situs ini.',
+  "Couldn't turn on notifications in this browser.": 'Notifikasi tidak bisa dinyalakan di browser ini.',
+  'On iPhone and iPad, add Partello to your Home Screen first (Share → Add to Home Screen), then turn on notifications there.':
+    'Di iPhone dan iPad, tambahkan Partello ke Layar Utama dulu (Bagikan → Tambah ke Layar Utama), lalu nyalakan notifikasi dari sana.',
+  "Notifications aren't set up on this server": 'Notifikasi belum diaktifkan di server ini',
+  "That push subscription isn't valid": 'Langganan notifikasi itu tidak valid',
+  "Notifications from this browser aren't supported": 'Notifikasi dari browser ini belum didukung',
 }

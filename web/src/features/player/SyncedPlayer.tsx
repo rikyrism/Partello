@@ -10,8 +10,8 @@
 //  * the server's echo of our own command is applied idempotently (no seek
 //    when already within tolerance).
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Lock, Pause, Play, RefreshCw, Settings2, SkipForward, Volume2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Lock, Maximize, Minimize, Pause, Play, RefreshCw, Settings2, SkipForward, Timer, Volume2 } from 'lucide-react'
 import type { Playback } from '../../realtime/protocol'
 import { useCanControl, useController, useRoom } from '../../room/context'
 import { useToast } from '../../components/Toast'
@@ -23,12 +23,22 @@ import { DRIFT_TOLERANCE, decideCorrection, detectJump, expectedPosition, player
 import { YTState, loadYouTubeApi, type YTPlayer } from './youtubeApi'
 import { ReactionOverlay } from '../reactions/Reactions'
 import { SkipVoteButton } from './SkipVote'
+import { CountdownOverlay } from './Countdown'
 
 const POLL_MS = 500
 const playerLanguage = (navigator.language || 'en').split('-')[0] ?? 'en'
 type Blocked = 'none' | 'muted' | 'needs_click'
 
-export function SyncedPlayer() {
+export interface TheaterProps {
+  /** Fill the available height instead of keeping 16:9 (theater mode). */
+  fill?: boolean
+  /** Extra layer over the video, e.g. the theater chat. */
+  overlay?: ReactNode
+  theater?: boolean
+  onToggleTheater?: () => void
+}
+
+export function SyncedPlayer({ fill = false, overlay, theater = false, onToggleTheater }: TheaterProps = {}) {
   const t = useT()
   const ctrl = useController()
   const toast = useToast()
@@ -326,11 +336,13 @@ export function SyncedPlayer() {
   const idle = !playback?.item || playback.status === 'idle'
 
   return (
-    <section aria-label={t('Video player')} className="flex flex-col">
-      <div className="relative aspect-video w-full overflow-hidden bg-black">
+    <section aria-label={t('Video player')} className={cx('flex flex-col', fill && 'min-h-0 flex-1')}>
+      <div className={cx('relative w-full overflow-hidden bg-black', fill ? 'min-h-0 flex-1' : 'aspect-video')}>
         <div ref={hostRef} className={cx('absolute inset-0 [&>iframe]:size-full', idle && 'invisible')} />
         {idle && <EmptyStage canAdd />}
         <ReactionOverlay />
+        <CountdownOverlay />
+        {overlay}
         {loadError && (
           <div className="absolute inset-0 grid place-items-center bg-night-2 p-6 text-center text-fog">
             <p className="max-w-sm">{loadError}</p>
@@ -367,7 +379,13 @@ export function SyncedPlayer() {
           )}
         </div>
       )}
-      <PlaybackBar playback={playback} duration={playback?.duration ?? localDuration} onResync={apply} />
+      <PlaybackBar
+        playback={playback}
+        duration={playback?.duration ?? localDuration}
+        onResync={apply}
+        theater={theater}
+        onToggleTheater={onToggleTheater}
+      />
     </section>
   )
 }
@@ -383,7 +401,19 @@ function EmptyStage({ canAdd }: { canAdd: boolean }) {
 }
 
 /** Partello's own controls, outside the YouTube frame. Shows room time, not local time. */
-function PlaybackBar({ playback, duration, onResync }: { playback: Playback | null; duration: number | null; onResync: () => void }) {
+function PlaybackBar({
+  playback,
+  duration,
+  onResync,
+  theater,
+  onToggleTheater,
+}: {
+  playback: Playback | null
+  duration: number | null
+  onResync: () => void
+  theater: boolean
+  onToggleTheater?: () => void
+}) {
   const t = useT()
   const ctrl = useController()
   const canControl = useCanControl()
@@ -442,9 +472,19 @@ function PlaybackBar({ playback, duration, onResync }: { playback: Playback | nu
       ) : (
         <SkipVoteButton />
       )}
+      {canControl && (
+        <IconButton label={t('Start together: count down 3-2-1 for everyone')} disabled={!hasItem} onClick={() => ctrl.startCountdown()}>
+          <Timer className="size-[18px]" />
+        </IconButton>
+      )}
       <IconButton label={t('Re-sync with the room')} onClick={onResync} disabled={!hasItem}>
         <RefreshCw className="size-[18px]" />
       </IconButton>
+      {onToggleTheater && (
+        <IconButton label={theater ? t('Exit theater mode') : t('Theater mode: full screen with chat')} onClick={onToggleTheater}>
+          {theater ? <Minimize className="size-[18px]" /> : <Maximize className="size-[18px]" />}
+        </IconButton>
+      )}
       {!canControl && (
         <span className="hidden items-center gap-1.5 pr-1 text-small text-haze md:inline-flex" title={t('The host controls playback')}>
           <Lock className="size-3.5" aria-hidden="true" /> {t('Host controls playback')}
