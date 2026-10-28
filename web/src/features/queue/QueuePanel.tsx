@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ArrowUp, Check, Play, Plus, Search, X } from 'lucide-react'
+import { ArrowUp, Check, ListPlus, Play, Plus, Search, X } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
+import { useToast } from '../../components/Toast'
 import { useCanControl, useController, useRoom, useSelf } from '../../room/context'
 import type { QueueItem } from '../../realtime/protocol'
-import { parseYouTubeId } from '../../lib/youtube'
+import { parseYouTubeId, playlistIdOf } from '../../lib/youtube'
 import { cx, formatTime } from '../../lib/format'
 import { api, ApiError, type SearchResult } from '../../lib/api'
 import { translate, useT } from '../../i18n'
@@ -57,6 +58,8 @@ function AddVideoForm() {
   const queueMode = useRoom((s) => s.room?.settings.queue_mode)
   const connected = useRoom((s) => s.status === 'open')
   const searchEnabled = useRoom((s) => !!s.limits?.search_enabled)
+  const playlistImport = useRoom((s) => !!s.limits?.playlist_import)
+  const toast = useToast()
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -66,6 +69,7 @@ function AddVideoForm() {
   const allowed = queueMode !== 'host_only' || !!self?.is_host
 
   const isLink = looksLikeLink(value)
+  const playlistId = isLink ? playlistIdOf(value) : null
   const query = !isLink && searchEnabled ? value.trim() : ''
   const search = useYouTubeSearch(ctrl.slug, ctrl.token, query)
   const results = search.results
@@ -85,6 +89,20 @@ function AddVideoForm() {
     }
   }
 
+  const addPlaylist = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await ctrl.queueAdd(value.trim(), true)
+      setValue('')
+      toast(t('Playlist added to the queue'))
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (!value.trim()) return
@@ -94,6 +112,12 @@ function AddVideoForm() {
       return
     }
     if (!parseYouTubeId(value)) {
+      // A playlist page link has no single video in it.
+      if (playlistId) {
+        if (playlistImport) void addPlaylist()
+        else setError(t("Playlist import isn't set up on this server. Add the videos one by one."))
+        return
+      }
       setError(searchEnabled ? t('Pick a video from the results, or paste a YouTube link.') : t("That doesn't look like a YouTube video link."))
       return
     }
@@ -159,6 +183,14 @@ function AddVideoForm() {
           {t('Add')}
         </Button>
       </form>
+      {playlistId && playlistImport && parseYouTubeId(value) && (
+        <div className="flex flex-wrap items-center gap-2 px-1 pt-2 text-small text-haze">
+          <span className="flex-1">{t('This link is part of a playlist.')}</span>
+          <Button size="sm" tone="dark" variant="secondary" disabled={!connected || busy} onClick={() => void addPlaylist()} icon={<ListPlus className="size-4" />}>
+            {t('Add the whole playlist')}
+          </Button>
+        </div>
+      )}
       {error && (
         <p id="queue-error" role="alert" className="px-1 pt-2 text-small text-alarm">
           {error}

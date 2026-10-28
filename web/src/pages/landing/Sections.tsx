@@ -347,7 +347,7 @@ const FAQ: [string, string][] = [
   [msg('Which videos can we watch?'), msg('Any YouTube video whose owner allows playing it on other sites. Paste the normal YouTube link, a youtu.be short link, or a Shorts link.')],
   [msg('Why does a video refuse to play?'), msg("Some owners block embedding, and private or removed videos can't play anywhere. Partello checks this when you add a link and tells you straight away.")],
   [msg('How many people fit in a room?'), msg('Up to 16 people can watch together, and up to 8 can be in the call at once.')],
-  [msg('Who controls playback?'), msg('The host, by default. The host can let everyone play, pause and skip, or hand the host role to someone else.')],
+  [msg('Who controls playback?'), msg('The host, by default. The host can let everyone play, pause and skip, or hand the host role to someone else. Everyone else can still vote to skip a video.')],
   [msg('How exact is the sync?'), msg('Usually within a second. Each player compares itself with the room clock twice a second and corrects drift; a very slow connection may lag briefly while it buffers.')],
   [msg('Is the call private?'), msg('Voice and camera travel directly between browsers, encrypted by WebRTC. Partello only passes along the messages needed to connect you.')],
   [msg('What if my connection drops?'), msg('Partello reconnects by itself and puts you back at the right moment. You keep your seat for a few seconds while it does.')],

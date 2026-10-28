@@ -21,6 +21,8 @@ import { Button, IconButton } from '../../components/Button'
 import { cx, formatTime } from '../../lib/format'
 import { DRIFT_TOLERANCE, decideCorrection, detectJump, expectedPosition, playerErrorMessage } from './syncMath'
 import { YTState, loadYouTubeApi, type YTPlayer } from './youtubeApi'
+import { ReactionOverlay } from '../reactions/Reactions'
+import { SkipVoteButton } from './SkipVote'
 
 const POLL_MS = 500
 const playerLanguage = (navigator.language || 'en').split('-')[0] ?? 'en'
@@ -328,6 +330,7 @@ export function SyncedPlayer() {
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         <div ref={hostRef} className={cx('absolute inset-0 [&>iframe]:size-full', idle && 'invisible')} />
         {idle && <EmptyStage canAdd />}
+        <ReactionOverlay />
         {loadError && (
           <div className="absolute inset-0 grid place-items-center bg-night-2 p-6 text-center text-fog">
             <p className="max-w-sm">{loadError}</p>
@@ -355,10 +358,12 @@ export function SyncedPlayer() {
       {videoError && !idle && (
         <div className="flex flex-wrap items-center gap-3 bg-[#3a1212] px-4 py-2.5 text-[#ffdcdc]" role="alert">
           <span className="flex-1 text-[0.9375rem]">{videoError}</span>
-          {canControl && (
+          {canControl ? (
             <Button size="sm" tone="dark" variant="secondary" icon={<SkipForward className="size-4" />} onClick={() => ctrl.queueSkip()}>
               {t('Skip video')}
             </Button>
+          ) : (
+            <SkipVoteButton />
           )}
         </div>
       )}
@@ -430,9 +435,13 @@ function PlaybackBar({ playback, duration, onResync }: { playback: Playback | nu
         onBlur={() => setScrub(null)}
         className="h-2 min-w-0 flex-1 cursor-pointer accent-biro-bright disabled:cursor-default disabled:opacity-40"
       />
-      <IconButton label={t('Skip to next video')} disabled={!hasItem || !canControl} onClick={() => ctrl.queueSkip()}>
-        <SkipForward className="size-5" />
-      </IconButton>
+      {canControl ? (
+        <IconButton label={t('Skip to next video')} disabled={!hasItem} onClick={() => ctrl.queueSkip()}>
+          <SkipForward className="size-5" />
+        </IconButton>
+      ) : (
+        <SkipVoteButton />
+      )}
       <IconButton label={t('Re-sync with the room')} onClick={onResync} disabled={!hasItem}>
         <RefreshCw className="size-[18px]" />
       </IconButton>

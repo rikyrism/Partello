@@ -21,7 +21,7 @@ export function playback(over: Partial<Playback> = {}): Playback {
 export const room = {
   slug: 'abcdefghijkm',
   name: "Ana's room",
-  settings: { control_mode: 'host_only', queue_mode: 'everyone' },
+  settings: { control_mode: 'host_only', queue_mode: 'everyone', permanent: false },
   max_participants: 16,
   created_at: 0,
   has_password: false,
@@ -37,7 +37,8 @@ export function sync(selfId = host.id, over: Partial<Extract<ServerEvent, { type
     queue: [],
     chat: [],
     ice_servers: [],
-    limits: { chat_max_chars: 500, max_voice_participants: 8, max_queue_len: 100, search_enabled: true },
+    limits: { chat_max_chars: 500, max_voice_participants: 8, max_queue_len: 100, search_enabled: true, playlist_import: true, call_mode: 'mesh' },
+    skip_votes: [],
     server_time: 1_000_000,
     ...over,
   }

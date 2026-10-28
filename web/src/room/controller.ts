@@ -1,7 +1,7 @@
 // One RoomController per mounted room page: owns the socket and the store and
 // exposes intent-level actions. UI components never touch the WebSocket.
 
-import type { ClientEvent, PlaybackAction, ServerEvent, SignalData } from '../realtime/protocol'
+import type { ChatMessage, ClientEvent, PlaybackAction, ReplyRef, ServerEvent, SignalData } from '../realtime/protocol'
 import { RoomSocket, wsUrl, type FatalReason } from '../realtime/socket'
 import { createRoomStore, type RoomStore } from './store'
 import { translate } from '../i18n'
@@ -14,6 +14,9 @@ export interface ControllerHandlers {
 
 type SignalListener = (from: string, data: SignalData) => void
 type ErrorListener = (code: string, message: string) => void
+type ReactionListener = (participantId: string, emoji: string) => void
+type CallTokenListener = (url: string, token: string) => void
+type MessageListener = (message: ChatMessage) => void
 
 let nonceSeq = 0
 const newNonce = () => `${Date.now().toString(36)}-${(nonceSeq++).toString(36)}`
@@ -23,7 +26,10 @@ export class RoomController {
   readonly socket: RoomSocket
   private signalListeners = new Set<SignalListener>()
   private errorListeners = new Set<ErrorListener>()
-  private pendingAdds = new Map<string, { url: string; resolve: () => void; reject: (e: Error) => void }>()
+  private reactionListeners = new Set<ReactionListener>()
+  private callTokenListeners = new Set<CallTokenListener>()
+  private messageListeners = new Set<MessageListener>()
+  private pendingAdds = new Map<string, { url: string; playlist: boolean; resolve: () => void; reject: (e: Error) => void }>()
 
   private handlers: ControllerHandlers = { onFatal: () => {}, onError: () => {} }
 
@@ -79,11 +85,38 @@ export class RoomController {
     return () => this.signalListeners.delete(listener)
   }
 
+  /** Emoji reactions as they happen (not kept in the store). */
+  onReaction(listener: ReactionListener): () => void {
+    this.reactionListeners.add(listener)
+    return () => this.reactionListeners.delete(listener)
+  }
+
+  /** SFU credentials, sent after the server admitted us to the call. */
+  onCallToken(listener: CallTokenListener): () => void {
+    this.callTokenListeners.add(listener)
+    return () => this.callTokenListeners.delete(listener)
+  }
+
+  /** New chat messages from other people (for sounds and mentions). */
+  onMessage(listener: MessageListener): () => void {
+    this.messageListeners.add(listener)
+    return () => this.messageListeners.delete(listener)
+  }
+
   private onEvent(event: ServerEvent): void {
     switch (event.type) {
       case 'voice_signal':
         this.signalListeners.forEach((l) => l(event.from, event.data))
         return
+      case 'reaction':
+        this.reactionListeners.forEach((l) => l(event.participant_id, event.emoji))
+        return
+      case 'call_token':
+        this.callTokenListeners.forEach((l) => l(event.url, event.token))
+        return
+      case 'chat_message_created':
+        if (event.message.participant_id !== this.selfId) this.messageListeners.forEach((l) => l(event.message))
+        break
       case 'error': {
         this.errorListeners.forEach((l) => l(event.code, event.message))
         if (event.code === 'kicked') return // the close frame follows
@@ -109,7 +142,9 @@ export class RoomController {
   }
 
   private resendPendingAdds(): void {
-    this.pendingAdds.forEach((p, nonce) => this.send({ type: 'queue_add', url: p.url, nonce }))
+    this.pendingAdds.forEach((p, nonce) =>
+      this.send({ type: p.playlist ? 'queue_add_playlist' : 'queue_add', url: p.url, nonce }),
+    )
   }
 
   private failPendingAdds(message: string): void {
@@ -123,7 +158,7 @@ export class RoomController {
 
   // ------------------------------------------------------------- chat
 
-  sendChat(body: string): boolean {
+  sendChat(body: string, replyTo?: ReplyRef): boolean {
     const trimmed = body.trim()
     const selfId = this.selfId
     if (!trimmed || !selfId) return false
@@ -137,10 +172,13 @@ export class RoomController {
         display_name: self?.display_name ?? translate('You'),
         body: trimmed,
         created_at: this.clock.now(),
+        reply_to: replyTo
+          ? { id: replyTo.id, participant_id: replyTo.participant_id, display_name: replyTo.display_name, body: replyTo.body }
+          : undefined,
         nonce,
       },
     })
-    const sent = this.send({ type: 'chat_send', body: trimmed, nonce })
+    const sent = this.send({ type: 'chat_send', body: trimmed, nonce, reply_to: replyTo?.id })
     if (!sent) this.store.dispatch({ type: 'chat_failed', nonce })
     else this.socket.probe()
     return sent
@@ -162,14 +200,14 @@ export class RoomController {
 
   // ------------------------------------------------------------- queue
 
-  queueAdd(url: string): Promise<void> {
+  queueAdd(url: string, playlist = false): Promise<void> {
     const nonce = newNonce()
     return new Promise((resolve, reject) => {
-      if (!this.send({ type: 'queue_add', url, nonce })) {
+      if (!this.send({ type: playlist ? 'queue_add_playlist' : 'queue_add', url, nonce })) {
         reject(new Error(translate('Not connected. Try again in a moment.')))
         return
       }
-      this.pendingAdds.set(nonce, { url, resolve, reject })
+      this.pendingAdds.set(nonce, { url, playlist, resolve, reject })
       this.socket.probe()
       setTimeout(() => {
         if (this.pendingAdds.has(nonce)) {
@@ -194,6 +232,14 @@ export class RoomController {
 
   queueSkip(): void {
     this.send({ type: 'queue_skip' })
+  }
+
+  skipVote(itemId: string, vote: boolean): void {
+    this.send({ type: 'skip_vote', item_id: itemId, vote })
+  }
+
+  react(emoji: string): void {
+    this.send({ type: 'react', emoji })
   }
 
   // ------------------------------------------------------------- call

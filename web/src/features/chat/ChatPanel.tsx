@@ -1,11 +1,14 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ArrowDown, RotateCcw, SendHorizontal } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { ArrowDown, Bell, BellOff, CornerUpLeft, RotateCcw, SendHorizontal, X } from 'lucide-react'
 import { Avatar } from '../../components/Avatar'
 import { IconButton } from '../../components/Button'
 import { useController, useRoom } from '../../room/context'
 import type { ChatEntry, MessageEntry } from '../../room/store'
+import type { ChatMessage, Participant } from '../../realtime/protocol'
 import { cx, formatClock } from '../../lib/format'
+import { storage } from '../../lib/storage'
 import { useT } from '../../i18n'
+import { mentionQuery, mentions, splitMentions } from './mentions'
 
 const GROUP_WINDOW_MS = 3 * 60_000
 
@@ -14,7 +17,22 @@ export function ChatPanel() {
   const chat = useRoom((s) => s.chat)
   const synced = useRoom((s) => s.synced)
   const selfId = useRoom((s) => s.selfId)
+  const participants = useRoom((s) => s.participants)
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const selfName = participants.find((p) => p.id === selfId)?.display_name ?? ''
+  // Names seen in this chat (people who left included) can be mentioned.
+  const namesKey = useMemo(() => {
+    const names = new Set(participants.map((p) => p.display_name))
+    for (const e of chat) if (e.kind === 'message') names.add(e.message.display_name)
+    return [...names].join('\n')
+  }, [participants, chat])
+  const names = useMemo(() => (namesKey ? namesKey.split('\n') : []), [namesKey])
+
+  const reply = useCallback((m: ChatMessage) => {
+    setReplyTo(m)
+    document.getElementById('chat-input')?.focus()
+  }, [])
   const stickRef = useRef(true)
   const [showJump, setShowJump] = useState(false)
 
@@ -62,7 +80,15 @@ export function ChatPanel() {
           ) : (
             <ol className="flex flex-col">
               {chat.map((entry, i) => (
-                <ChatRow key={entry.kind === 'system' ? entry.id : entry.message.nonce ?? entry.message.id} entry={entry} prev={chat[i - 1]} selfId={selfId} />
+                <ChatRow
+                  key={entry.kind === 'system' ? entry.id : entry.message.nonce ?? entry.message.id}
+                  entry={entry}
+                  prev={chat[i - 1]}
+                  selfId={selfId}
+                  selfName={selfName}
+                  names={names}
+                  onReply={reply}
+                />
               ))}
             </ol>
           )}
@@ -76,7 +102,7 @@ export function ChatPanel() {
           </button>
         )}
       </div>
-      <Composer />
+      <Composer replyTo={replyTo} onCancelReply={() => setReplyTo(null)} participants={participants} selfId={selfId} />
     </div>
   )
 }
@@ -98,20 +124,45 @@ function ChatSkeleton() {
   )
 }
 
-const ChatRow = memo(function ChatRow({ entry, prev, selfId }: { entry: ChatEntry; prev?: ChatEntry; selfId: string | null }) {
+const ChatRow = memo(function ChatRow({
+  entry,
+  prev,
+  selfId,
+  selfName,
+  names,
+  onReply,
+}: {
+  entry: ChatEntry
+  prev?: ChatEntry
+  selfId: string | null
+  selfName: string
+  names: string[]
+  onReply: (m: ChatMessage) => void
+}) {
   const t = useT()
   if (entry.kind === 'system') {
     return <li className="py-1.5 text-small text-haze">{t(entry.text, entry.vars)}</li>
   }
   const m = entry.message
   const grouped =
+    !m.reply_to &&
     prev?.kind === 'message' &&
     prev.message.participant_id === m.participant_id &&
     m.created_at - prev.message.created_at < GROUP_WINDOW_MS
   const isSelf = m.participant_id === selfId
+  const mentioned = !isSelf && (mentions(m.body, selfName) || (m.reply_to?.participant_id === selfId && !!selfId))
+  const sent = !entry.pending && !entry.failed
 
   return (
-    <li className={cx('flex gap-2.5', grouped ? 'pt-0.5' : 'pt-3', entry.pending && 'opacity-60')}>
+    <li
+      id={sent ? `msg-${m.id}` : undefined}
+      className={cx(
+        'group/msg relative flex gap-2.5',
+        grouped ? 'pt-0.5' : 'pt-3',
+        entry.pending && 'opacity-60',
+        mentioned && '-mx-3 bg-biro/15 px-3 pb-1 shadow-[inset_3px_0_0_var(--color-biro-bright)]',
+      )}
+    >
       <div className="w-9 shrink-0">{!grouped && <Avatar id={m.participant_id} name={m.display_name} />}</div>
       <div className="min-w-0 flex-1">
         {!grouped && (
@@ -122,36 +173,100 @@ const ChatRow = memo(function ChatRow({ entry, prev, selfId }: { entry: ChatEntr
             </time>
           </div>
         )}
-        <p className="whitespace-pre-wrap break-words text-[0.9375rem] leading-relaxed text-fog">{m.body}</p>
+        {m.reply_to && <Quote reply={m.reply_to} selfId={selfId} />}
+        <p className="whitespace-pre-wrap break-words text-[0.9375rem] leading-relaxed text-fog">
+          {splitMentions(m.body, names).map((seg, i) =>
+            seg.mention ? (
+              <span key={i} className={cx('font-medium', seg.mention.toLowerCase() === selfName.toLowerCase() ? 'text-white' : 'text-biro-bright')}>
+                {seg.text}
+              </span>
+            ) : (
+              seg.text
+            ),
+          )}
+        </p>
         {entry.failed && <RetryNote entry={entry} />}
       </div>
+      {sent && (
+        <button
+          type="button"
+          onClick={() => onReply(m)}
+          aria-label={t('Reply to {name}', { name: m.display_name })}
+          className="absolute top-1 right-0 grid size-8 place-items-center bg-night-3 text-haze opacity-100 hover:text-fog focus-visible:outline-2 focus-visible:outline-biro-bright sm:opacity-0 sm:group-hover/msg:opacity-100 sm:focus-visible:opacity-100"
+        >
+          <CornerUpLeft className="size-4" aria-hidden="true" />
+        </button>
+      )}
     </li>
   )
 })
 
+function Quote({ reply, selfId }: { reply: NonNullable<ChatMessage['reply_to']>; selfId: string | null }) {
+  const t = useT()
+  const jump = () => {
+    const el = document.getElementById(`msg-${reply.id}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  return (
+    <button
+      type="button"
+      onClick={jump}
+      className="my-1 flex w-full max-w-full flex-col items-start bg-night-3 px-2.5 py-1.5 text-left text-small shadow-[inset_2px_0_0_var(--color-haze)] hover:bg-night-4"
+    >
+      <span className="font-medium text-fog">{reply.participant_id === selfId ? t('You') : reply.display_name}</span>
+      <span className="line-clamp-2 break-words text-haze">{reply.body}</span>
+    </button>
+  )
+}
+
 function RetryNote({ entry }: { entry: MessageEntry }) {
   const t = useT()
   const ctrl = useController()
+  const original = entry.message.reply_to
   return (
     <button
       className="mt-0.5 inline-flex items-center gap-1 text-small text-alarm hover:underline"
-      onClick={() => ctrl.sendChat(entry.message.body)}
+      onClick={() => ctrl.sendChat(entry.message.body, original)}
     >
       <RotateCcw className="size-3" aria-hidden="true" /> {t('Not sent. Send again')}
     </button>
   )
 }
 
-function Composer() {
+function Composer({
+  replyTo,
+  onCancelReply,
+  participants,
+  selfId,
+}: {
+  replyTo: ChatMessage | null
+  onCancelReply: () => void
+  participants: Participant[]
+  selfId: string | null
+}) {
   const t = useT()
   const ctrl = useController()
   const status = useRoom((s) => s.status)
   const max = useRoom((s) => s.limits?.chat_max_chars ?? 500)
   const [text, setText] = useState('')
+  const [caret, setCaret] = useState(0)
+  const [pick, setPick] = useState(0)
+  const [sounds, setSounds] = useState(() => storage.getChatSounds())
   const ref = useRef<HTMLTextAreaElement>(null)
   const connected = status === 'open'
   const length = [...text.trim()].length
   const tooLong = length > max
+
+  // "@ri" at the caret suggests people whose name starts with it.
+  const query = mentionQuery(text.slice(0, caret))
+  const suggestions =
+    query === null
+      ? []
+      : participants
+          .filter((p) => p.id !== selfId && p.display_name.toLowerCase().startsWith(query.toLowerCase()))
+          .slice(0, 5)
+  const picking = suggestions.length > 0
+  const active = Math.min(pick, Math.max(0, suggestions.length - 1))
 
   // Grow with content up to ~5 lines.
   useEffect(() => {
@@ -161,27 +276,111 @@ function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`
   }, [text])
 
+  const complete = (p: Participant) => {
+    const before = text.slice(0, caret).replace(/@[^\s@]*$/, `@${p.display_name} `)
+    const next = before + text.slice(caret)
+    setText(next)
+    setCaret(before.length)
+    setPick(0)
+    requestAnimationFrame(() => {
+      ref.current?.focus()
+      ref.current?.setSelectionRange(before.length, before.length)
+    })
+  }
+
   const submit = (e?: FormEvent) => {
     e?.preventDefault()
     if (!connected || length === 0 || tooLong) return
-    if (ctrl.sendChat(text)) setText('')
+    if (ctrl.sendChat(text, replyTo ?? undefined)) {
+      setText('')
+      setCaret(0)
+      onCancelReply()
+    }
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (picking) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const step = e.key === 'ArrowDown' ? 1 : suggestions.length - 1
+        setPick((active + step) % suggestions.length)
+        return
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.nativeEvent.isComposing) {
+        e.preventDefault()
+        complete(suggestions[active]!)
+        return
+      }
+    }
+    if (e.key === 'Escape' && replyTo) {
+      e.preventDefault()
+      onCancelReply()
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
     }
   }
 
+  const toggleSounds = () => {
+    storage.setChatSounds(!sounds)
+    setSounds(!sounds)
+  }
+
   return (
-    <form onSubmit={submit} className="bg-night-2 p-2">
+    <form onSubmit={submit} className="relative bg-night-2 p-2">
       {!connected && (
         <p className="px-1 pb-2 text-small text-haze" role="status">
           {status === 'closed' ? t('Disconnected from the room.') : t('Reconnecting… messages will send once you are back.')}
         </p>
       )}
+      {replyTo && (
+        <div className="mb-2 flex items-start gap-2 bg-night-3 py-1.5 pr-1 pl-2.5 shadow-[inset_2px_0_0_var(--color-biro-bright)]">
+          <div className="min-w-0 flex-1 text-small">
+            <p className="font-medium text-fog">{t('Replying to {name}', { name: replyTo.display_name })}</p>
+            <p className="truncate text-haze">{replyTo.body}</p>
+          </div>
+          <IconButton size="sm" label={t('Cancel reply')} onClick={onCancelReply}>
+            <X className="size-4" />
+          </IconButton>
+        </div>
+      )}
+      {picking && (
+        <ul
+          id="mention-list"
+          role="listbox"
+          aria-label={t('Mention someone')}
+          className="pop-in absolute inset-x-2 bottom-full z-10 mb-1 bg-night-3 py-1 shadow-[0_-12px_32px_rgba(0,0,0,0.45)]"
+        >
+          {suggestions.map((p, i) => (
+            <li
+              key={p.id}
+              id={`mention-${p.id}`}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                complete(p)
+              }}
+              onMouseEnter={() => setPick(i)}
+              className={cx('flex cursor-pointer items-center gap-2 px-2.5 py-1.5', i === active && 'bg-night-4')}
+            >
+              <Avatar id={p.id} name={p.display_name} size="sm" />
+              <span className="truncate text-[0.9375rem]">{p.display_name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="flex items-end gap-2">
+        <IconButton
+          label={sounds ? t('Mute chat sounds') : t('Turn chat sounds on')}
+          active={false}
+          onClick={toggleSounds}
+          aria-pressed={!sounds}
+        >
+          {sounds ? <Bell className="size-[18px]" /> : <BellOff className="size-[18px]" />}
+        </IconButton>
         <label htmlFor="chat-input" className="sr-only">
           {t('Message')}
         </label>
@@ -190,10 +389,19 @@ function Composer() {
           ref={ref}
           rows={1}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            setCaret(e.target.selectionStart)
+            setPick(0)
+          }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
           placeholder={connected ? t('Message the room') : t('Waiting for connection')}
           maxLength={max * 2}
+          role={picking ? 'combobox' : undefined}
+          aria-expanded={picking ? true : undefined}
+          aria-controls={picking ? 'mention-list' : undefined}
+          aria-activedescendant={picking ? `mention-${suggestions[active]!.id}` : undefined}
           className="scrollbar-thin min-h-11 flex-1 resize-none bg-night-3 px-3 py-2.5 text-[0.9375rem] text-fog placeholder:text-haze focus:outline-none focus-visible:outline-2 focus-visible:outline-biro-bright"
           aria-describedby={length > max * 0.8 ? 'chat-count' : undefined}
         />

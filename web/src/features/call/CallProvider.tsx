@@ -1,4 +1,5 @@
-// Call state for the room page: device tracks, the mesh, remote streams.
+// Call state for the room page: device tracks, the transport (peer-to-peer
+// mesh, or a LiveKit SFU when the server has one), remote streams.
 // Microphone permission is requested only when the user chooses to join.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -6,7 +7,8 @@ import { useController, useRoom } from '../../room/context'
 import { useToast } from '../../components/Toast'
 import { translate } from '../../i18n'
 import { DeviceError, getCamera, getMicrophone } from './media'
-import { MeshCall } from './mesh'
+import { MeshCall, type CallTransport, type MeshEvents } from './mesh'
+import type { SfuCall } from './sfu'
 import { audioContext, useAnySpeaking } from './speaking'
 
 type Status = 'idle' | 'joining' | 'joined'
@@ -51,6 +53,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const selfId = useRoom((s) => s.selfId)
   const participants = useRoom((s) => s.participants)
   const iceServers = useRoom((s) => s.iceServers)
+  const callMode = useRoom((s) => s.limits?.call_mode ?? 'mesh')
   const synced = useRoom((s) => s.synced)
   const connection = useRoom((s) => s.status)
 
@@ -66,7 +69,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [talkHeld, setTalkHeld] = useState(false)
   const [autoDuck, setAutoDuck] = useState(true)
 
-  const meshRef = useRef<MeshCall | null>(null)
+  const meshRef = useRef<CallTransport | null>(null)
+  const sfuRef = useRef<SfuCall | null>(null)
   const micRef = useRef<MediaStreamTrack | null>(null)
   const camRef = useRef<MediaStreamTrack | null>(null)
   const stateRef = useRef({ muted, camera })
@@ -96,6 +100,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     awaitingServer.current = false
     meshRef.current?.close()
     meshRef.current = null
+    sfuRef.current = null
     micRef.current?.stop()
     camRef.current?.stop()
     micRef.current = null
@@ -108,6 +113,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setTalkHeld(false)
     setStatus('idle')
   }, [])
+  // For callbacks created before teardown was (transport events).
+  const teardownRef = useRef(teardown)
+  useEffect(() => {
+    teardownRef.current = teardown
+  }, [teardown])
 
   const stopCamera = useCallback(async () => {
     camRef.current?.stop()
@@ -161,17 +171,50 @@ export function CallProvider({ children }: { children: ReactNode }) {
         setMuted(true)
       }
       micRef.current = mic
-      const mesh = new MeshCall(selfId, iceServers, {
+      const events: MeshEvents = {
         sendSignal: (to, data) => ctrl.sendSignal(to, data),
+        // A new object each time: the SFU reuses one MediaStream per person.
         onRemoteStream: (id, stream) => setRemoteStreams((s) => ({ ...s, [id]: stream })),
         onPeerState: (id, state) => setPeerStates((s) => ({ ...s, [id]: state })),
         onPeerClosed: (id) => {
           setRemoteStreams(({ [id]: _gone, ...rest }) => rest)
           setPeerStates(({ [id]: _gone, ...rest }) => rest)
         },
-      })
-      meshRef.current = mesh
-      await mesh.setMicrophone(mic)
+      }
+      let transport: CallTransport
+      if (callMode === 'sfu') {
+        // Loaded only when needed; the token arrives after the server admits us.
+        let mod: typeof import('./sfu')
+        try {
+          mod = await import('./sfu')
+        } catch {
+          if (gen === joinGen.current) {
+            mic.stop()
+            micRef.current = null
+            toast(translate("Couldn't load the call. Check your connection and try again."), 'error')
+            setStatus('idle')
+          }
+          return
+        }
+        if (gen !== joinGen.current) {
+          mic.stop()
+          return
+        }
+        const sfu = new mod.SfuCall({
+          ...events,
+          onDisconnected: () => {
+            toast(translate('The call disconnected. Join again to keep talking.'), 'error')
+            ctrl.voiceLeave()
+            teardownRef.current()
+          },
+        })
+        sfuRef.current = sfu
+        transport = sfu
+      } else {
+        transport = new MeshCall(selfId, iceServers, events)
+      }
+      meshRef.current = transport
+      await transport.setMicrophone(mic)
       let cameraOn = false
       if (withCamera) cameraOn = await startCamera()
       if (gen !== joinGen.current) {
@@ -193,7 +236,24 @@ export function CallProvider({ children }: { children: ReactNode }) {
       // a rejection (call full) tears everything down again.
       awaitingServer.current = true
     },
-    [status, selfId, iceServers, ctrl, toast, startCamera, rebuildLocalStream, teardown],
+    [status, selfId, iceServers, callMode, ctrl, toast, startCamera, rebuildLocalStream, teardown],
+  )
+
+  // SFU credentials arrive once the server accepted our voice_join.
+  useEffect(
+    () =>
+      ctrl.onCallToken((url, token) => {
+        const sfu = sfuRef.current
+        if (!sfu) return
+        sfu.connect(url, token).catch((err) => {
+          console.warn('[call] could not connect to the call server', err)
+          if (sfuRef.current !== sfu) return
+          toast(translate("Couldn't connect to the call server. Try again in a moment."), 'error')
+          ctrl.voiceLeave()
+          teardownRef.current()
+        })
+      }),
+    [ctrl, toast],
   )
 
   const leave = useCallback(() => {

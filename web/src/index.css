@@ -201,6 +201,37 @@
   animation: pop-in 0.22s var(--ease-out-soft) both;
 }
 
+/* Emoji reactions drift up over the video and fade out. */
+@keyframes reaction-float {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.6);
+  }
+  12% {
+    opacity: 1;
+    transform: translate3d(calc(var(--sway) * 0.3), -18%, 0) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--sway), -320%, 0) scale(1);
+  }
+}
+
+@keyframes reaction-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.reaction-float {
+  animation: reaction-float 2.6s var(--ease-out-soft) both;
+  will-change: transform, opacity;
+}
+
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -211,6 +242,10 @@
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
     scroll-behavior: auto !important;
+  }
+  /* Still shown, just without the travel. */
+  .reaction-float {
+    animation: reaction-fade 2.4s linear both !important;
   }
   .reveal-ready [data-reveal] {
     opacity: 1;

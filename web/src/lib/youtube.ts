@@ -23,3 +23,9 @@ export function parseYouTubeId(input: string): string | null {
   else if (parts[0] && ['embed', 'shorts', 'live', 'v'].includes(parts[0])) id = parts[1]
   return id && ID.test(id) ? id : null
 }
+
+/** The `list=` id of a regular playlist. Mixes ("RD…") are made per viewer and can't be imported. */
+export function playlistIdOf(v: string): string | null {
+  const id = /[?&]list=([A-Za-z0-9_-]{2,64})/.exec(v)?.[1]
+  return id && !id.startsWith('RD') ? id : null
+}

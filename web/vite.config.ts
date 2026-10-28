@@ -20,6 +20,9 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
+    // The LiveKit client (~540 kB) is its own chunk, loaded only when a call
+    // on an SFU server starts; everything on the first load stays far below.
+    chunkSizeWarningLimit: 600,
   },
   test: {
     environment: 'jsdom',

@@ -7,6 +7,8 @@ import { ChatPanel } from '../features/chat/ChatPanel'
 import { QueuePanel } from '../features/queue/QueuePanel'
 import { PeoplePanel } from '../features/people/PeoplePanel'
 import { CallControls, CallStage } from '../features/call/CallStage'
+import { ReactionBar } from '../features/reactions/Reactions'
+import { useChatNotifications } from '../features/chat/useChatNotifications'
 import { useCall } from '../features/call/CallProvider'
 import { Button, IconButton } from '../components/Button'
 import { useToast } from '../components/Toast'
@@ -27,6 +29,7 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
   const call = useCall()
   const [tab, setTab] = useState<Tab>('chat')
   const unread = useUnread(tab === 'chat')
+  useChatNotifications(tab === 'chat')
   const queueLen = useRoom((s) => s.queue.length)
   const people = useRoom((s) => s.participants.length)
 
@@ -54,7 +57,8 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 bg-night-2 px-2 py-2 sm:px-3">
-            <p className="min-w-0 flex-1 text-small text-haze">
+            <ReactionBar className="w-full justify-between sm:w-auto sm:justify-start" />
+            <p className="hidden min-w-0 flex-1 text-small text-haze md:block">
               {call.status === 'joined'
                 ? t("Use headphones so the video doesn't leak into your microphone.")
                 : t('Join the call to talk while you watch.')}
@@ -231,6 +235,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState(room?.name ?? '')
   const [control, setControl] = useState<ControlMode>(room?.settings.control_mode ?? 'host_only')
   const [queue, setQueue] = useState<QueueMode>(room?.settings.queue_mode ?? 'everyone')
+  const [permanent, setPermanent] = useState(!!room?.settings.permanent)
   const [pin, setPin] = useState('')
   const [removePin, setRemovePin] = useState(false)
   const hasPin = !!room?.has_password
@@ -258,6 +263,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
         name: name.trim(),
         control_mode: control,
         queue_mode: queue,
+        permanent,
         pin: pinPatch,
       })
       // Remember the PIN on this device so invitations can include it.
@@ -309,6 +315,17 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
             ['host_only', t('Only the host')],
           ]}
         />
+        <div className="flex flex-col gap-1.5">
+          <label className="flex items-center gap-2.5 font-medium">
+            <input type="checkbox" checked={permanent} onChange={(e) => setPermanent(e.target.checked)} className="size-4 accent-biro-bright" />
+            {t('Keep this room forever')}
+          </label>
+          <p className="pl-6.5 text-small text-haze">
+            {permanent
+              ? t('The link keeps working, so your group can come back to the same room every time.')
+              : t('Rooms nobody visits for 30 days are deleted. Keep it to reuse the same link.')}
+          </p>
+        </div>
         <div className="flex flex-col gap-2">
           <label htmlFor="room-pin-setting" className="font-medium">
             {hasPin ? t('Change the PIN') : t('Room PIN (optional)')}

@@ -14,6 +14,7 @@ const NAME_KEY = 'partello:name'
 const hostKey = (slug: string) => `partello:host:${slug}`
 const sessionKey = (slug: string) => `partello:session:${slug}`
 const pinKey = (slug: string) => `partello:pin:${slug}`
+const SOUNDS_KEY = 'partello:chat-sounds'
 
 export interface StoredSession {
   token: string
@@ -25,6 +26,10 @@ export interface StoredSession {
 }
 
 export const storage = {
+  /** Chat sounds are on unless this device turned them off. */
+  getChatSounds: () => safe(() => localStorage.getItem(SOUNDS_KEY) !== 'off', true),
+  setChatSounds: (on: boolean) => safe(() => localStorage.setItem(SOUNDS_KEY, on ? 'on' : 'off'), undefined),
+
   getName: () => safe(() => localStorage.getItem(NAME_KEY) ?? '', ''),
   setName: (name: string) => safe(() => localStorage.setItem(NAME_KEY, name), undefined),
 

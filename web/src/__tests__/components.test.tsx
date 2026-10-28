@@ -90,7 +90,7 @@ describe('QueuePanel', () => {
     const s = ctrl.store.getState()
     ctrl.store.dispatch({
       type: 'server',
-      event: { type: 'room_settings_changed', room: { ...s.room!, settings: { control_mode: 'host_only', queue_mode: 'host_only' } } },
+      event: { type: 'room_settings_changed', room: { ...s.room!, settings: { control_mode: 'host_only', queue_mode: 'host_only', permanent: false } } },
     })
     render(wrap(<QueuePanel />))
     expect(screen.getByText('Only the host can add videos in this room.')).toBeInTheDocument()

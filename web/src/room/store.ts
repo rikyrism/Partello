@@ -44,6 +44,8 @@ export interface RoomState {
   chat: ChatEntry[]
   iceServers: IceServer[]
   limits: Limits | null
+  /** Who voted to skip the current video. */
+  skipVotes: string[]
 }
 
 export const initialRoomState: RoomState = {
@@ -57,6 +59,7 @@ export const initialRoomState: RoomState = {
   chat: [],
   iceServers: [],
   limits: null,
+  skipVotes: [],
 }
 
 const CHAT_KEEP = 300
@@ -146,6 +149,7 @@ function applyServer(state: RoomState, ev: ServerEvent, at: number): RoomState {
         chat: [...history, ...pending],
         iceServers: ev.ice_servers,
         limits: ev.limits,
+        skipVotes: ev.skip_votes ?? [],
       }
     }
 
@@ -182,10 +186,23 @@ function applyServer(state: RoomState, ev: ServerEvent, at: number): RoomState {
       }
     }
 
-    case 'playback_changed':
+    case 'playback_changed': {
       // Drop out-of-order updates.
       if (state.playback && ev.playback.version < state.playback.version) return state
-      return { ...state, playback: ev.playback }
+      // Votes belong to one video.
+      const sameItem = state.playback?.item?.id === ev.playback.item?.id
+      return { ...state, playback: ev.playback, skipVotes: sameItem ? state.skipVotes : [] }
+    }
+
+    case 'skip_votes': {
+      if (state.playback?.item?.id !== ev.item_id) return state
+      if (!ev.skipped) return { ...state, skipVotes: ev.voters }
+      return {
+        ...state,
+        skipVotes: [],
+        chat: appendChat(state.chat, system({ text: 'The room voted to skip {title}', vars: { title: state.playback.item.title } }, at)),
+      }
+    }
 
     case 'queue_updated':
       return { ...state, queue: ev.queue }
