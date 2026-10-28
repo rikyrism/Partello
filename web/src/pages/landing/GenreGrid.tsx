@@ -1,6 +1,7 @@
-// "Pick a genre": each card wears the thumbnail of a trailer that is popular
-// right now; opening it lists the picks, and "Watch together" opens a room
-// that is already playing the chosen video.
+// "Pick a genre": each card wears the thumbnail of a video trending on
+// YouTube today (or a built-in trailer when the server has no chart);
+// opening it lists the picks, and "Watch together" opens a room that is
+// already playing the chosen video.
 
 import { useState, type FormEvent } from 'react'
 import { ArrowRight, ChevronDown, Play } from 'lucide-react'
@@ -9,13 +10,16 @@ import { ApiError } from '../../lib/api'
 import { cx } from '../../lib/format'
 import { storage } from '../../lib/storage'
 import { Button } from '../../components/Button'
-import { GENRES, thumb, type GenreVideo } from './genres'
+import { still, thumb, type GenreVideo } from './genres'
+import { usePicks } from './trending'
 import { useCreateRoom } from './useCreateRoom'
 
 export function GenreGrid() {
   const t = useT()
+  const picks = usePicks()
+  const genres = picks?.genres ?? []
   const [open, setOpen] = useState<string | null>(null)
-  const openGenre = GENRES.find((g) => g.name === open)
+  const openGenre = genres.find((g) => g.name === open)
 
   return (
     <section id="genres" className="bg-ink px-4 pt-20 pb-24 text-paper lg:px-10 lg:pt-28 lg:pb-32" aria-labelledby="genres-title">
@@ -25,12 +29,14 @@ export function GenreGrid() {
             {t('Pick a genre')}
           </h2>
           <p className="max-w-[40ch] text-body text-[#c4c4c4]" data-reveal style={{ '--i': 1 } as React.CSSProperties}>
-            {t('Trailers people are watching right now. Open one and your room starts playing it.')}
+            {picks?.live
+              ? t("What's trending on YouTube today. Open one and your room starts playing it.")
+              : t('Trailers people are watching right now. Open one and your room starts playing it.')}
           </p>
         </div>
 
-        <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-          {GENRES.map((g, i) => {
+        <ul className={cx('grid grid-cols-2 gap-2', genres.length % 4 === 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3 lg:grid-cols-5')}>
+          {genres.map((g, i) => {
             const active = g.name === open
             return (
               <li key={g.name} data-reveal style={{ '--i': i % 5 } as React.CSSProperties}>
@@ -42,7 +48,7 @@ export function GenreGrid() {
                   className={cx('genre-card group block w-full bg-night-2 text-left', active && 'is-active')}
                 >
                   <span className="block aspect-video overflow-hidden bg-night-3">
-                    <img src={thumb(g.videos[0]!.id)} alt="" loading="lazy" className="genre-img size-full object-cover" />
+                    <img src={still(g.videos[0]!, 'hq')} alt="" loading="lazy" className="genre-img size-full object-cover" />
                   </span>
                   <span className={cx('flex items-center justify-between gap-2 px-3 py-3 transition-colors sm:px-4', active ? 'bg-biro' : 'group-hover:bg-night-3')}>
                     <span className="text-body font-semibold tracking-[-0.01em] text-white">{t(g.name)}</span>
@@ -92,7 +98,11 @@ function Pick({ video }: { video: GenreVideo }) {
   return (
     <article className="flex flex-col bg-night-3">
       <div className="relative aspect-video overflow-hidden">
-        <img src={thumb(video.id, 'mq')} srcSet={`${thumb(video.id, 'mq')} 320w, ${thumb(video.id, 'hq')} 480w`} sizes="(min-width: 1024px) 30vw, 100vw" alt="" loading="lazy" className="size-full object-cover" />
+        <img
+          src={video.thumb ?? thumb(video.id, 'mq')}
+          srcSet={video.thumb ? undefined : `${thumb(video.id, 'mq')} 320w, ${thumb(video.id, 'hq')} 480w`}
+          sizes="(min-width: 1024px) 30vw, 100vw"
+          alt="" loading="lazy" className="size-full object-cover" />
         <Play className="absolute top-1/2 left-1/2 size-10 -translate-1/2 fill-white/90 text-white/90" aria-hidden="true" />
       </div>
       <div className="flex flex-1 flex-col gap-3 p-3">

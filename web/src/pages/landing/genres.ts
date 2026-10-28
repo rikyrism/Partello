@@ -7,6 +7,10 @@ export interface GenreVideo {
   id: string
   title: string
   channel: string
+  /** Full thumbnail URL on i.ytimg.com; built from the id when missing. */
+  thumb?: string
+  /** Seconds, when known. */
+  duration?: number | null
 }
 
 export interface Genre {
@@ -16,6 +20,12 @@ export interface Genre {
 }
 
 export const thumb = (id: string, size: 'hq' | 'mq' | 'maxres' = 'hq') => `https://i.ytimg.com/vi/${id}/${size}default.jpg`
+
+/** The largest picture of a video: the chart's own, or YouTube's by id. */
+export const still = (v: GenreVideo, size: 'hq' | 'mq' | 'maxres' = 'maxres') => v.thumb ?? thumb(v.id, size)
+
+/** "Title | Official Trailer | Studio" → "Title". */
+export const shortTitle = (title: string) => title.split(/\s[|–—]\s/)[0]!.trim()
 
 export const GENRES: Genre[] = [
   {

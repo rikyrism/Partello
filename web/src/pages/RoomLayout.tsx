@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { Link2, Lock, LogOut, MessageSquare, ListVideo, Settings, Users } from 'lucide-react'
+import { Link2, Lock, LogOut, MessageSquare, ListVideo, PanelRightClose, PanelRightOpen, Settings, Users } from 'lucide-react'
 import { useController, useRoom, useSelf } from '../room/context'
 import { SyncedPlayer } from '../features/player/SyncedPlayer'
 import { ChatPanel } from '../features/chat/ChatPanel'
 import { QueuePanel } from '../features/queue/QueuePanel'
 import { PeoplePanel } from '../features/people/PeoplePanel'
-import { CallControls, CallStage } from '../features/call/CallStage'
+import { CallControls, CallStage, useCallStageShown } from '../features/call/CallStage'
 import { ReactionBar } from '../features/reactions/Reactions'
 import { TheaterOverlay } from '../features/theater/TheaterOverlay'
 import { NotifyButton } from '../features/notify/NotifyButton'
@@ -18,6 +18,7 @@ import { Wordmark } from '../components/Wordmark'
 import { api, ApiError } from '../lib/api'
 import { cx } from '../lib/format'
 import { storage } from '../lib/storage'
+import { useMedia, useSoftKeyboard } from '../lib/viewport'
 import { InviteDialog } from '../features/invite/InviteDialog'
 import type { ControlMode, QueueMode } from '../realtime/protocol'
 import { translate, useT } from '../i18n'
@@ -30,11 +31,23 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
   const room = useRoom((s) => s.room)
   const call = useCall()
   const [tab, setTab] = useState<Tab>('chat')
-  const unread = useUnread(tab === 'chat')
-  useChatNotifications(tab === 'chat')
+  // Two columns from 1024px (laptops, iPad landscape); one column below,
+  // where the video stays put and only the panel underneath scrolls.
+  const wide = useMedia('(min-width: 1024px)')
+  const [sideOpen, setSideOpen] = useState(true)
+  const sideShown = !wide || sideOpen
+  const unread = useUnread(tab === 'chat' && sideShown)
+  useChatNotifications(tab === 'chat' && sideShown)
   const queueLen = useRoom((s) => s.queue.length)
-  const [theaterRef, theaterOn, toggleTheater] = useTheater()
+  const hasVideo = useRoom((s) => !!s.playback?.item && s.playback.status !== 'idle')
+  // A phone on its side has no room for anything but the video.
+  const phoneLandscape = useMedia('(orientation: landscape) and (max-height: 500px) and (pointer: coarse)')
+  const [theaterRef, theaterOn, toggleTheater] = useTheater(phoneLandscape && hasVideo)
   const people = useRoom((s) => s.participants.length)
+  const stageShown = useCallStageShown()
+  const keyboard = useSoftKeyboard()
+  // Typing in one column: keep the video in sight, smaller, and drop the rest.
+  const compact = keyboard != null && !wide
 
   useEffect(() => {
     document.title = room ? `${room.name} · Partello` : 'Partello'
@@ -49,17 +62,29 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
   }
 
   return (
-    <div className="room-scope flex h-dvh flex-col bg-night text-fog">
-      <RoomHeader onLeave={leave} />
-      <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="room-scope flex h-dvh flex-col overflow-hidden bg-night text-fog" style={keyboard != null ? { height: keyboard } : undefined}>
+      <RoomHeader onLeave={leave} side={wide ? { open: sideOpen, unread, toggle: () => setSideOpen((o) => !o) } : undefined} />
+      <div
+        className={cx(
+          'flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:overflow-hidden',
+          sideShown && 'lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]',
+        )}
+      >
         <main className="flex shrink-0 flex-col lg:min-h-0 lg:shrink lg:overflow-y-auto lg:scrollbar-thin">
           <div
             ref={theaterRef}
             className={cx(theaterOn ? 'fixed inset-0 z-50 flex flex-col bg-black' : 'bg-night')}
             onKeyDown={(e) => e.key === 'Escape' && theaterOn && toggleTheater()}
           >
-            {/* Keep the whole player plus controls on screen on short, wide displays. */}
-            <div className={cx(theaterOn ? 'flex min-h-0 w-full flex-1 flex-col' : 'mx-auto w-full lg:max-w-[calc((100dvh-11.5rem)*16/9)]')}>
+            {/* Two columns: the player, its controls and the call strip all fit one screen. */}
+            <div
+              className={cx(
+                theaterOn
+                  ? 'flex min-h-0 w-full flex-1 flex-col'
+                  : cx('mx-auto w-full', stageShown ? 'lg:max-w-[calc((100dvh-19rem)*16/9)]' : 'lg:max-w-[calc((100dvh-11.5rem)*16/9)]'),
+              )}
+              style={compact && !theaterOn ? { maxWidth: Math.round(keyboard * 0.32 * (16 / 9)) } : undefined}
+            >
               <SyncedPlayer
                 fill={theaterOn}
                 theater={theaterOn}
@@ -68,7 +93,7 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
               />
             </div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 bg-night-2 px-2 py-2 sm:px-3">
+          <div className={cx('flex flex-wrap items-center justify-between gap-2 bg-night-2 px-2 py-2 sm:px-3', compact && 'hidden')}>
             <ReactionBar className="w-full justify-between sm:w-auto sm:justify-start" />
             <p className="hidden min-w-0 flex-1 text-small text-haze md:block">
               {call.status === 'joined'
@@ -77,10 +102,10 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
             </p>
             <CallControls compact />
           </div>
-          <CallStage />
+          <CallStage className={compact ? 'hidden' : undefined} />
         </main>
 
-        <aside className="flex min-h-[45dvh] flex-1 flex-col bg-night-2 lg:min-h-0" aria-label={t('Room panels')}>
+        <aside className={cx('flex min-h-48 flex-1 flex-col bg-night-2 lg:min-h-0', !sideShown && 'hidden')} aria-label={t('Room panels')}>
           <div role="tablist" aria-label={t('Room panels')} className="flex shrink-0 bg-night">
             <TabButton id="chat" current={tab} onSelect={setTab} icon={<MessageSquare className="size-4" />} badge={unread}>
               {t('Chat')}
@@ -110,15 +135,24 @@ export function RoomLayout({ onLeave }: { onLeave: () => void }) {
 /**
  * Theater mode: the player area goes full screen with chat and reactions
  * over the video. Uses the Fullscreen API where it exists, and a fixed
- * full-window layout where it doesn't (iPhone).
+ * full-window layout where it doesn't (iPhone). `auto` turns it on without a
+ * tap (a phone held sideways), so that case uses the full-window layout only.
  */
-function useTheater() {
+function useTheater(auto: boolean) {
   const ref = useRef<HTMLDivElement>(null)
-  const [on, setOn] = useState(false)
+  const [manual, setManual] = useState(false)
+  // Leaving an automatic theater sticks until the phone turns upright again.
+  const [dismissed, setDismissed] = useState(false)
+  const [wasAuto, setWasAuto] = useState(auto)
+  if (wasAuto !== auto) {
+    setWasAuto(auto)
+    if (!auto) setDismissed(false)
+  }
+  const on = manual || (auto && !dismissed)
 
   useEffect(() => {
     const onChange = () => {
-      if (!document.fullscreenElement) setOn(false)
+      if (!document.fullscreenElement) setManual(false)
     }
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
@@ -126,14 +160,15 @@ function useTheater() {
 
   const toggle = useCallback(() => {
     if (on) {
-      setOn(false)
+      setManual(false)
+      if (auto) setDismissed(true)
       if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
       return
     }
-    setOn(true)
+    setManual(true)
     const el = ref.current
     if (el?.requestFullscreen) void el.requestFullscreen({ navigationUI: 'hide' }).catch(() => undefined)
-  }, [on])
+  }, [on, auto])
 
   return [ref, on, toggle] as const
 }
@@ -207,7 +242,13 @@ function TabPanel({ id, current, children }: { id: Tab; current: Tab; children: 
   )
 }
 
-function RoomHeader({ onLeave }: { onLeave: () => void }) {
+interface SideToggle {
+  open: boolean
+  unread: number
+  toggle: () => void
+}
+
+function RoomHeader({ onLeave, side }: { onLeave: () => void; side?: SideToggle }) {
   const t = useT()
   const room = useRoom((s) => s.room)
   const self = useSelf()
@@ -229,6 +270,14 @@ function RoomHeader({ onLeave }: { onLeave: () => void }) {
       {self?.is_host && (
         <IconButton label={t('Room settings')} onClick={() => setSettingsOpen(true)}>
           <Settings className="size-[18px]" />
+        </IconButton>
+      )}
+      {side && (
+        <IconButton label={side.open ? t('Hide side panel') : t('Show side panel')} onClick={side.toggle} aria-expanded={side.open} className="relative">
+          {side.open ? <PanelRightClose className="size-[18px]" /> : <PanelRightOpen className="size-[18px]" />}
+          {!side.open && side.unread > 0 && (
+            <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-biro-bright" aria-label={t('{n} unread', { n: side.unread })} />
+          )}
         </IconButton>
       )}
       <IconButton label={t('Leave room')} onClick={onLeave}>

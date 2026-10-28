@@ -7,7 +7,8 @@ import { Wordmark } from '../../components/Wordmark'
 import { Perforation, Stripe } from './Hero'
 import { useCreateRoom } from './useCreateRoom'
 import { CurtainImage, reducedMotion, useInView } from './motion'
-import { FEATURED, thumb } from './genres'
+import { shortTitle, still } from './genres'
+import { usePicks } from './trending'
 import { msg, useT } from '../../i18n'
 
 const delay = (i: number) => ({ '--i': i }) as CSSProperties
@@ -24,21 +25,27 @@ export function Showcase() {
   const t = useT()
   const [tab, setTab] = useState<(typeof SYNC_TABS)[number]['id']>('pause')
   const active = SYNC_TABS.find((t) => t.id === tab)!
+  const video = usePicks()?.featured[4]
   return (
     <section className="bg-surface lg:grid lg:min-h-[88svh] lg:grid-cols-2" aria-labelledby="showcase-title">
       <div className="flex items-center justify-center p-4 lg:p-10">
         <figure className="relative m-0 aspect-square w-full max-w-[42rem]">
-          <CurtainImage
-            key={tab}
-            src={thumb(FEATURED.spongebob.id, 'maxres')}
-            alt={FEATURED.spongebob.title}
-            className="size-full"
-            imgClassName={tab === 'seek' ? 'showcase-seek' : tab === 'late' ? 'showcase-late' : ''}
-          />
-          <figcaption className="absolute bottom-0 left-0 flex items-center gap-2 bg-ink px-3 py-2 text-base text-paper">
-            {tab === 'pause' ? <Pause className="size-4" aria-hidden="true" /> : <Play className="size-4" aria-hidden="true" />}
-            <span className="tabular">
-              SpongeBob · {tab === 'seek' ? t('jumped to 0:42 on every screen') : tab === 'late' ? t('Molly joins at 1:24, on every screen') : t('1:24 on every screen')}
+          {video ? (
+            <CurtainImage
+              key={`${tab}-${video.id}`}
+              src={still(video)}
+              alt={video.title}
+              className="size-full"
+              imgClassName={tab === 'seek' ? 'showcase-seek' : tab === 'late' ? 'showcase-late' : ''}
+            />
+          ) : (
+            <div className="size-full bg-night-2" />
+          )}
+          <figcaption className="absolute bottom-0 left-0 flex max-w-full items-center gap-2 bg-ink px-3 py-2 text-base text-paper">
+            {tab === 'pause' ? <Pause className="size-4 shrink-0" aria-hidden="true" /> : <Play className="size-4 shrink-0" aria-hidden="true" />}
+            <span className="tabular truncate">
+              {video ? `${shortTitle(video.title)} · ` : ''}
+              {tab === 'seek' ? t('jumped to 0:42 on every screen') : tab === 'late' ? t('Molly joins at 1:24, on every screen') : t('1:24 on every screen')}
             </span>
           </figcaption>
         </figure>
@@ -230,6 +237,7 @@ export function Sheets() {
 function SyncVisual() {
   const t = useT()
   const screens = [t("Nita's laptop"), t("Riky's phone"), t("Molly's TV")]
+  const video = usePicks()?.featured[2]
   const [clock, setClock] = useState(61.2)
   const running = useRef(false)
   const ref = useInView<HTMLDivElement>((v) => (running.current = v))
@@ -247,12 +255,14 @@ function SyncVisual() {
       {screens.map((who, i) => (
         <div key={who} className="flex flex-col bg-night-2">
           <div className="relative aspect-video overflow-hidden sm:aspect-auto sm:flex-1">
-            <img
-              src={thumb(FEATURED.wildwood.id, 'maxres')}
-              alt={i === 0 ? t('The same moment of the Wildwood trailer on three screens') : ''}
-              className="drift absolute inset-0 size-full object-cover"
-              loading="lazy"
-            />
+            {video && (
+              <img
+                src={still(video)}
+                alt={i === 0 ? t('The same moment of {title} on three screens', { title: shortTitle(video.title) }) : ''}
+                className="drift absolute inset-0 size-full object-cover"
+                loading="lazy"
+              />
+            )}
           </div>
           <div className="h-1 bg-night-4">
             <div className="sync-bar h-full bg-biro-bright" />
@@ -270,18 +280,19 @@ function SyncVisual() {
 function ChatVisual() {
   const t = useT()
   const msgs = [
-    ['Nita', msg('who brought the krabby patties')],
-    ['Riky', msg('patrick is me before coffee')],
-    ['Molly', msg('skip to the flying dutchman part?')],
+    ['Nita', msg('who brought the snacks')],
+    ['Riky', msg('turn it up for this part')],
+    ['Molly', msg('go back to the good part?')],
     ['Nita', msg('yes!!')],
   ]
+  const video = usePicks()?.featured[1]
   return (
     <div data-ui className="flex size-full flex-col justify-end gap-3 bg-[#1238b0] p-5 text-white lg:p-8">
-      <CurtainImage
-        src={thumb(FEATURED.spongebobTeaser.id, 'maxres')}
-        alt={FEATURED.spongebobTeaser.title}
-        className="mb-2 min-h-40 w-full flex-1"
-      />
+      {video ? (
+        <CurtainImage key={video.id} src={still(video)} alt={video.title} className="mb-2 min-h-40 w-full flex-1" />
+      ) : (
+        <div className="mb-2 min-h-40 w-full flex-1" />
+      )}
       {msgs.map(([who, body], i) => (
         <p key={i} className="max-w-md bg-white/10 px-4 py-2.5 text-base" data-reveal style={delay(i + 1)}>
           <span className="font-semibold">{who}</span> {t(body!)}
@@ -296,10 +307,11 @@ function ChatVisual() {
 
 function CallVisual() {
   const t = useT()
+  const video = usePicks()?.featured[3]
   return (
     <div data-ui className="grid size-full grid-cols-2 grid-rows-[1fr_auto] gap-2 bg-ink p-2">
       <div className="relative col-span-2 min-h-48">
-        <CurtainImage src={thumb(FEATURED.forgottenIsland.id, 'maxres')} alt={FEATURED.forgottenIsland.title} className="size-full" />
+        {video ? <CurtainImage key={video.id} src={still(video)} alt={video.title} className="size-full" /> : <div className="size-full bg-night-2" />}
         <span className="speaking-ring pointer-events-none absolute inset-0" aria-hidden="true" />
       </div>
       {[
@@ -460,6 +472,7 @@ export function ClosingCall() {
 
 export function Footer() {
   const t = useT()
+  const picks = usePicks()
   return (
     <footer className="flex min-h-svh flex-col bg-ink text-paper">
       <Stripe className="h-2" />
@@ -481,10 +494,10 @@ export function Footer() {
             <span>{t('WebRTC voice and camera')}</span>
             <span>{t('Rust and React')}</span>
           </FooterCol>
-          <FooterCol title={t('Trailers shown')}>
-            {[FEATURED.spongebob, FEATURED.wildwood, FEATURED.notAlone, FEATURED.forgottenIsland].map((v) => (
+          <FooterCol title={t('Videos shown')}>
+            {picks?.featured.map((v) => (
               <a key={v.id} href={`https://www.youtube.com/watch?v=${v.id}`}>
-                {v.title.split('|')[0]!.trim()} · {v.channel}
+                {shortTitle(v.title)} · {v.channel}
               </a>
             ))}
             <span>{t('Thumbnails served by YouTube')}</span>
@@ -499,7 +512,7 @@ export function Footer() {
             </text>
           </svg>
           <p className="pt-5 text-small text-[#a8a8a8]">
-            {t("Partello is not affiliated with YouTube. Videos play in YouTube's official player and follow its terms. Trailer thumbnails belong to their owners.")}
+            {t("Partello is not affiliated with YouTube. Videos play in YouTube's official player and follow its terms. Video thumbnails belong to their owners.")}
           </p>
         </div>
       </div>

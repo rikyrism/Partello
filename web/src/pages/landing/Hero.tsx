@@ -45,7 +45,9 @@ export function Hero() {
 
 function HeroStage() {
   return (
-    <div className="relative order-1 h-[48svh] overflow-hidden lg:sticky lg:top-3 lg:order-none lg:h-[calc(100svh-24px)]">
+    // Phones: as tall as the room fragment itself, plus the strip the ticket's
+    // stripe overlaps (-mt-6), so no call tile is cut off. Desktop: sticky stage.
+    <div className="relative order-1 overflow-hidden pb-6 lg:sticky lg:top-3 lg:order-none lg:h-[calc(100svh-24px)] lg:pb-0">
       <RoomFragment className="hero-stage" />
     </div>
   )

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { id } from '../i18n/id'
 import { translate } from '../i18n'
 import { GENRES } from '../pages/landing/genres'
+import { TRENDING_GENRES } from '../pages/landing/trending'
 import { describeChange } from '../room/store'
 
 const SRC = join(__dirname, '..')
@@ -31,6 +32,7 @@ describe('Indonesian translations', () => {
 
   it('cover genre names, device names and chat notes', () => {
     for (const g of GENRES) expect(id[g.name], g.name).toBeTruthy()
+    for (const name of TRENDING_GENRES) expect(id[name], name).toBeTruthy()
     expect(id.microphone).toBeTruthy()
     const base = { id: 'x', display_name: 'Nita', is_host: false, connected: true, joined_at: 0, voice: null }
     const notes = [

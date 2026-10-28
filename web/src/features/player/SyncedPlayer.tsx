@@ -11,7 +11,7 @@
 //    when already within tolerance).
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Lock, Maximize, Minimize, Pause, Play, RefreshCw, Settings2, SkipForward, Timer, Volume2 } from 'lucide-react'
+import { Lock, Maximize, Minimize, Pause, Play, RefreshCw, SkipForward, Timer, Volume2 } from 'lucide-react'
 import type { Playback } from '../../realtime/protocol'
 import { useCanControl, useController, useRoom } from '../../room/context'
 import { useToast } from '../../components/Toast'
@@ -490,12 +490,6 @@ function PlaybackBar({
           <Lock className="size-3.5" aria-hidden="true" /> {t('Host controls playback')}
         </span>
       )}
-      <span
-        className="hidden items-center gap-1.5 pr-1 text-small text-haze xl:inline-flex"
-        title={t('YouTube picks the quality for each viewer. Change yours with the gear icon in the player; it does not affect anyone else.')}
-      >
-        <Settings2 className="size-3.5" aria-hidden="true" /> {t('Quality and subtitles: gear and CC in the player')}
-      </span>
     </div>
   )
 }

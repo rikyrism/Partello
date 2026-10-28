@@ -13,6 +13,20 @@ export class ApiError extends Error {
   }
 }
 
+export interface TrendingVideo {
+  id: string
+  title: string
+  channel: string
+  thumb: string
+  duration: number | null
+}
+
+export interface TrendingResponse {
+  region: string
+  fetched_at: number
+  genres: { name: string; videos: TrendingVideo[] }[]
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
@@ -74,6 +88,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ display_name: displayName, name: name || undefined, video_url: videoUrl }),
     }),
+
+  /** Today's YouTube chart per genre; empty when the server has none. */
+  trending: () => request<TrendingResponse>('/api/trending'),
 
   getRoom: (slug: string) => request<RoomSummary>(`/api/rooms/${encodeURIComponent(slug)}`),
 

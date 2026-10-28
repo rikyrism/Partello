@@ -130,18 +130,26 @@ export const id: Record<string, string> = {
   "Nita's laptop": 'Laptop Nita',
   "Riky's phone": 'Ponsel Riky',
   "Molly's TV": 'TV Molly',
-  'The same moment of the Wildwood trailer on three screens': 'Momen yang sama dari trailer Wildwood di tiga layar',
-  'who brought the krabby patties': 'siapa yang bawa krabby patty',
-  'patrick is me before coffee': 'patrick itu aku sebelum ngopi',
-  'skip to the flying dutchman part?': 'langsung ke bagian flying dutchman?',
   'yes!!': 'iya!!',
+  'The same moment of {title} on three screens': 'Momen yang sama dari {title} di tiga layar',
+  'who brought the snacks': 'siapa yang bawa camilan',
+  'turn it up for this part': 'kerasin, bagian ini seru',
+  'go back to the good part?': 'mundur ke bagian serunya?',
+  'this part gets me every time': 'bagian ini selalu bikin merinding',
+  'pause, getting snacks': 'pause, ambil camilan dulu',
+  "What's trending on YouTube today. Open one and your room starts playing it.":
+    'Yang lagi trending di YouTube hari ini. Buka salah satu dan room kamu langsung memutarnya.',
+  'Trending': 'Trending',
+  'Gaming': 'Game',
+  'Film & Animation': 'Film & Animasi',
+  'Entertainment': 'Hiburan',
+  'Sports': 'Olahraga',
+  'Science & Technology': 'Sains & Teknologi',
   Speaking: 'Berbicara',
   Muted: 'Bisu',
 
   // ---- landing: room fragment
   'Friday film club': 'Klub film Jumat',
-  'patrick is literally me': 'patrick literally aku banget',
-  'pause, getting krabby patties': 'pause, ambil krabby patty dulu',
   'paused for everyone, go': 'udah di-pause buat semua, sana',
   'back. play!': 'udah balik. play!',
   '{name} paused for everyone': '{name} menjeda untuk semua',
@@ -197,10 +205,10 @@ export const id: Record<string, string> = {
   'Under the hood': 'Di balik layar',
   'WebRTC voice and camera': 'Suara dan kamera WebRTC',
   'Rust and React': 'Rust dan React',
-  'Trailers shown': 'Trailer yang ditampilkan',
+  'Videos shown': 'Video yang ditampilkan',
   'Thumbnails served by YouTube': 'Thumbnail disajikan oleh YouTube',
-  "Partello is not affiliated with YouTube. Videos play in YouTube's official player and follow its terms. Trailer thumbnails belong to their owners.":
-    'Partello tidak berafiliasi dengan YouTube. Video diputar di player resmi YouTube dan mengikuti ketentuannya. Thumbnail trailer milik pemiliknya masing-masing.',
+  "Partello is not affiliated with YouTube. Videos play in YouTube's official player and follow its terms. Video thumbnails belong to their owners.":
+    'Partello tidak berafiliasi dengan YouTube. Video diputar di player resmi YouTube dan mengikuti ketentuannya. Thumbnail video milik pemiliknya masing-masing.',
 
   // ---- join gate + room messages
   "You're invited to": 'Anda diundang ke',
@@ -264,9 +272,6 @@ export const id: Record<string, string> = {
   'Re-sync with the room': 'Sinkronkan ulang dengan room',
   'The host controls playback': 'Host yang mengontrol pemutaran',
   'Host controls playback': 'Host mengontrol pemutaran',
-  'Quality and subtitles: gear and CC in the player': 'Kualitas dan subtitle: ikon gir dan CC di player',
-  'YouTube picks the quality for each viewer. Change yours with the gear icon in the player; it does not affect anyone else.':
-    'YouTube memilih kualitas untuk setiap penonton. Ubah milik Anda lewat ikon gir di player; tidak memengaruhi orang lain.',
   'Only the host can control playback in this room': 'Hanya host yang bisa mengontrol pemutaran di room ini',
   'Playback speed stays at 1× so everyone keeps watching together': 'Kecepatan putar tetap 1× supaya semua orang tetap menonton bersama',
 
@@ -538,6 +543,8 @@ export const id: Record<string, string> = {
   'Exit theater mode': 'Keluar dari mode bioskop',
   'Recent messages': 'Pesan terbaru',
   'Hide chat': 'Sembunyikan chat',
+  'Hide side panel': 'Sembunyikan panel samping',
+  'Show side panel': 'Tampilkan panel samping',
   'Show chat': 'Tampilkan chat',
   'Jump everyone to {time}': 'Loncatkan semua orang ke {time}',
   'Only the host can jump to {time}': 'Hanya host yang bisa loncat ke {time}',

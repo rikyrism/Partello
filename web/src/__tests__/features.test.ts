@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { FEATURED_COUNT, toPicks } from '../pages/landing/trending'
+import { shortTitle } from '../pages/landing/genres'
 import { mentionQuery, mentions, splitMentions } from '../features/chat/mentions'
 import { votesNeeded } from '../features/player/SkipVote'
 import { playlistIdOf } from '../lib/youtube'
@@ -71,5 +73,38 @@ describe('skip votes', () => {
     const next = playback({ item: { ...item, id: 'item-2' }, version: 2 })
     s = reduce(s, { type: 'server', event: { type: 'playback_changed', playback: next, actor_id: null, server_time: 0 } })
     expect(s.skipVotes).toEqual([])
+  })
+})
+
+describe('landing picks', () => {
+  const video = (id: string) => ({ id, title: `${id} | Official Video`, channel: 'C', thumb: `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`, duration: 200 })
+
+  it('draws distinct featured videos from today’s chart', () => {
+    const picks = toPicks({
+      region: 'US',
+      fetched_at: 1,
+      genres: [
+        { name: 'Trending', videos: ['a', 'b', 'c', 'd'].map(video) },
+        { name: 'Music', videos: ['c', 'd', 'e', 'f'].map(video) },
+        { name: 'Sports', videos: [] },
+      ],
+    })
+    expect(picks.live).toBe(true)
+    expect(picks.genres.map((g) => g.name)).toEqual(['Trending', 'Music'])
+    expect(picks.featured).toHaveLength(FEATURED_COUNT)
+    expect(new Set(picks.featured.map((v) => v.id)).size).toBe(FEATURED_COUNT)
+  })
+
+  it('falls back to the built-in picks when the chart is empty or too small', () => {
+    expect(toPicks({ region: 'US', fetched_at: 0, genres: [] }).live).toBe(false)
+    const small = toPicks({ region: 'US', fetched_at: 1, genres: [{ name: 'Music', videos: ['a', 'b'].map(video) }] })
+    expect(small.live).toBe(false)
+    expect(small.featured).toHaveLength(FEATURED_COUNT)
+  })
+
+  it('shortens chart titles for captions', () => {
+    expect(shortTitle('Wildwood – Official Trailer')).toBe('Wildwood')
+    expect(shortTitle('Avengers: Doomsday | Official Trailer | Marvel')).toBe('Avengers: Doomsday')
+    expect(shortTitle('Plain title')).toBe('Plain title')
   })
 })

@@ -9,8 +9,20 @@ import { useT } from '../../i18n'
 import { useCall } from './CallProvider'
 import { useSpeaking } from './speaking'
 
-/** Camera/avatar tiles for everyone in the call. Renders nothing when the call is empty. */
-export function CallStage() {
+/** Whether the call strip has anything to show. */
+export function useCallStageShown() {
+  const call = useCall()
+  const anyoneInCall = useRoom((s) => s.participants.some((p) => p.voice))
+  return anyoneInCall || call.status !== 'idle'
+}
+
+/**
+ * Camera/avatar tiles for everyone in the call, as one row that scrolls
+ * sideways so the video above never moves. Renders nothing when the call is
+ * empty. Hide it with CSS (className), never by unmounting: it also plays
+ * everyone's audio.
+ */
+export function CallStage({ className }: { className?: string }) {
   const call = useCall()
   const selfId = useRoom((s) => s.selfId)
   const participants = useRoom((s) => s.participants)
@@ -21,12 +33,12 @@ export function CallStage() {
   const ordered = [...inCall].sort((a, b) => (a.id === selfId ? -1 : b.id === selfId ? 1 : a.joined_at - b.joined_at))
 
   return (
-    <section aria-label="Call" className="bg-night-2 p-2">
-      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+    <section aria-label="Call" className={cx('shrink-0 bg-night-2 px-2 pb-2', className)}>
+      <ul className="scrollbar-thin flex gap-2 overflow-x-auto">
         {ordered.map((p) => {
           const isSelf = p.id === selfId
           return (
-            <li key={p.id}>
+            <li key={p.id} className="w-36 shrink-0 sm:w-44 lg:w-48">
               <Tile
                 participant={p}
                 isSelf={isSelf}
@@ -75,7 +87,7 @@ const Tile = memo(function Tile({
         <video ref={videoRef} autoPlay playsInline muted className={cx('size-full object-cover', isSelf && '-scale-x-100')} />
       ) : (
         <div className="grid size-full place-items-center">
-          <Avatar id={participant.id} name={participant.display_name} size="lg" className="size-14 text-lg sm:size-16" />
+          <Avatar id={participant.id} name={participant.display_name} size="lg" className="size-12 text-lg sm:size-14" />
         </div>
       )}
       <figcaption className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-black/55 px-2 py-1 text-small text-fog">
