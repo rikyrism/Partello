@@ -262,6 +262,40 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
 
+  /api/trending:
+    get:
+      tags: [Rooms]
+      summary: Today's YouTube chart per genre, for the landing page
+      description: >
+        Refreshed by the server once a day from YouTube's most-popular chart; never fetched per
+        request. `genres` is empty when the server has no YouTube key or no list yet.
+      responses:
+        '200':
+          description: The stored list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  region: { type: string, example: US }
+                  fetched_at: { type: integer, description: Unix milliseconds; 0 when never fetched. }
+                  genres:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, example: Music }
+                        videos:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id: { type: string }
+                              title: { type: string }
+                              channel: { type: string }
+                              thumb: { type: string, format: uri }
+                              duration: { type: integer, nullable: true, description: Seconds. }
+
   /api/push/key:
     get:
       tags: [Rooms]

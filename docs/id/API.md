@@ -39,6 +39,7 @@ Tombol lonceng "beri tahu saya" di aplikasi memakai tiga endpoint di luar `/api/
 
 | Method | Path | Fungsi |
 | --- | --- | --- |
+| `GET` | `/api/trending` | Chart YouTube hari ini per genre: `{"region","fetched_at","genres":[{"name","videos":[{"id","title","channel","thumb","duration"}]}]}`; `genres` kosong jika server belum punya daftar |
 | `GET` | `/api/push/key` | `{"public_key": "…"}`: public key VAPID server (base64url) untuk `PushManager.subscribe({ applicationServerKey })` |
 | `POST` | `/api/rooms/{slug}/push` | Body `{"subscription": <PushSubscription.toJSON()>, "lang": "id"}` (`lang`: `en` atau `id`). Beri tahu browser ini saat ada yang mulai nonton di room; dijawab 204. Subscribe lagi memperbarui key dan bahasanya |
 | `DELETE` | `/api/rooms/{slug}/push` | Body `{"endpoint": "…"}`. Hentikan notifikasi untuk room ini; dijawab 204 |

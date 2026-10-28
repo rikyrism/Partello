@@ -39,6 +39,7 @@ The app's "notify me" bell uses three endpoints outside `/api/v1`. They take no 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/api/trending` | Today's YouTube chart per genre: `{"region","fetched_at","genres":[{"name","videos":[{"id","title","channel","thumb","duration"}]}]}`; `genres` is empty when the server has no list |
 | `GET` | `/api/push/key` | `{"public_key": "…"}`: the server's VAPID public key (base64url) for `PushManager.subscribe({ applicationServerKey })` |
 | `POST` | `/api/rooms/{slug}/push` | Body `{"subscription": <PushSubscription.toJSON()>, "lang": "en"}` (`lang`: `en` or `id`). Notify this browser when someone starts watching in the room; answers 204. Subscribing again updates the keys and language |
 | `DELETE` | `/api/rooms/{slug}/push` | Body `{"endpoint": "…"}`. Stop notifications for this room; answers 204 |
