@@ -57,6 +57,9 @@ services:
       LIVEKIT_API_URL: ${LIVEKIT_API_URL:-}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      # Optional: the push key is generated once and kept in Postgres.
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     expose:
